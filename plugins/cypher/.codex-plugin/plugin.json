@@ -1,0 +1,13 @@
+{
+  "name": "cypher",
+  "version": "0.2.0",
+  "description": "Open a human only space within your AI.",
+  "interface": {
+    "displayName": "Cypher",
+    "shortDescription": "Human-only internet chatrooms.",
+    "composerIcon": "./assets/icon.png",
+    "logo": "./assets/icon.png"
+  },
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json"
+}

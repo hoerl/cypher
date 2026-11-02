@@ -1,0 +1,20 @@
+{
+  "name": "cypher-shared",
+  "interface": {
+    "displayName": "Cypher"
+  },
+  "plugins": [
+    {
+      "name": "cypher",
+      "source": {
+        "source": "local",
+        "path": "./plugins/cypher"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Communication"
+    }
+  ]
+}
