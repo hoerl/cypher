@@ -1,7 +1,8 @@
 # Install Cypher
 
 Install Cypher in the app where the user is chatting, then open its portal.
-Use only the current host's section. No local app server, build, developer
+Cypher must open inline in this chat. Never open a browser or /app as an
+installation or launch fallback. Use only the current host's section. No local app server, build, developer
 credentials, or separate World ID plugin is needed.
 
 If Cypher's `open_portal` tool is already available, call it with `{}` instead
@@ -11,7 +12,16 @@ of installing again. Use the exact tool name exposed by the host.
 
 1. Inspect `codex plugin marketplace list --json` and `codex plugin list --json`.
    Reuse `cypher@cypher-shared` when already installed from this repository.
-2. For a new installation, run:
+2. Prefer the host's native marketplace/plugin installation control when it
+   supports this Git source. Otherwise run the commands below through the host's
+   supported permission flow. They require outbound HTTPS to GitHub and writes
+   to Codex's configuration, marketplace staging, and plugin cache. When the
+   terminal is sandboxed, request the appropriate execution permission for the
+   complete installation operation up front, rather than retrying directory by
+   directory. Do not change sandbox policy, chmod directories, or edit config
+   by hand. Honor any host-required approval or rejection.
+
+   For a new installation, run:
 
 ```sh
 codex plugin marketplace add https://github.com/hoerl/cypher.git --ref main
@@ -22,10 +32,13 @@ codex plugin add cypher@cypher-shared
    `https://github.com/hoerl/cypher.git`, tracks `main`, and that
    `cypher@cypher-shared` is installed and enabled. Keep the moving branch for
    updates; do not register a local checkout or pin a commit.
-4. Refresh plugins through the host's supported controls. Call `open_portal`
+4. Refresh plugins through the host's supported controls and discover deferred
+   Cypher tools through its tool registry. A missing tool in the initial list
+   does not prove it is unavailable. Call `open_portal`
    with `{}` through the connected tool. If this chat cannot discover new tools,
    restart the host and open a new chat, select Cypher, and ask to open the portal.
-   Report installation and portal rendering separately.
+   Report installation and portal rendering separately. Never open a browser
+   fallback while inline launch is pending. Keep the response to one next step.
 
 The user's explicit installation request authorizes this installation within
 that host's rules. Proceed with the supported installation action; if the host

@@ -9,7 +9,7 @@
 Paste this into your chat:
 
 ```text
-Install Cypher from https://github.com/hoerl/cypher using https://raw.githubusercontent.com/hoerl/cypher/main/INSTALL.md, then open the portal.
+Install Cypher from https://github.com/hoerl/cypher using https://raw.githubusercontent.com/hoerl/cypher/main/INSTALL.md, then open it inline in this chat.
 ```
 
 [The guide](INSTALL.md) uses the current host's installation flow, just like

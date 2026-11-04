@@ -1,6 +1,6 @@
 {
   "name": "cypher",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Open a human only space within your AI.",
   "interface": {
     "displayName": "Cypher",
