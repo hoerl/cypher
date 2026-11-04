@@ -1,6 +1,6 @@
 ---
 name: cypher
-description: Launch Cypher inline when the user mentions @Cypher (including a bare mention), asks to open its portal, or return to its rooms. Do not use for development or metadata requests.
+description: Launch Cypher inline when the user mentions @Cypher (including a bare mention), asks to open Cypher, or return to its rooms. Do not use for development or metadata requests.
 ---
 
 A bare @Cypher mention requests an inline launch. Call `open_portal` with `{}`.
@@ -11,7 +11,7 @@ registry before treating it as unavailable. Do not ask whether to open Cypher.
 Never substitute a browser, /app URL, side panel, generated UI, or direct HTTP
 request for the inline tool. Only an explicit side-panel request uses open_panel.
 If tools remain unavailable after supported refresh, report inline launch pending
-and the single required next step. Do not claim the portal is open.
+and the single required next step. Do not claim Cypher is open.
 Use `open_panel` only when the user requests the conversation side panel.
 Use `open_space` for the global application entrypoint.
 

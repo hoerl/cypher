@@ -1,9 +1,11 @@
 # Install Cypher
 
-Install Cypher in the app where the user is chatting, then open its portal.
+Install Cypher in the app where the user is chatting, then open Cypher.
 Cypher must open inline in this chat. Never open a browser or /app as an
 installation or launch fallback. Use only the current host's section. No local app server, build, developer
 credentials, or separate World ID plugin is needed.
+
+During installation, show only “Installing Cypher…” when installation starts and “Opening Cypher…” when launching. Skip status for steps you skip. Keep checks, commands, tool names, and setup summaries out of chat. If blocked, give only the blocker and the next required action. If installation succeeded but this chat cannot load Cypher, say “Cypher installed. Start a new chat and select @Cypher to open it.”
 
 If Cypher's `open_portal` tool is already available, call it with `{}` instead
 of installing again. Use the exact tool name exposed by the host.
@@ -21,11 +23,11 @@ Install the full Cypher plugin in Codex by running these bash commands for me:
 codex plugin marketplace add https://github.com/hoerl/cypher.git --ref main &&
 codex plugin add cypher@cypher-shared
 
-Reuse an existing installation. Follow any required permission prompts. After installation, refresh the available tools and open Cypher inline with open_portal. If a new chat is required, tell me to start one and select @Cypher. Do not open a browser fallback.
+Show only short status updates, such as “Installing Cypher…” and “Opening Cypher…”. If you need me to act, give me just the next step. Reuse an existing installation. Follow any required permission prompts. After installation, refresh the available tools and open Cypher inline with open_portal. If a new chat is required, tell me to start one and select @Cypher. Do not open a browser fallback.
 ```
 
-After installation, type **@** and select **Cypher** from the picker to open its
-portal inline. If the plugin is not available in the current chat, restart Codex
+After installation, type **@** and select **Cypher** from the picker to open Cypher
+inline. If the plugin is not available in the current chat, restart Codex
 and start a new chat before selecting it.
 
 ## ChatGPT
@@ -37,7 +39,7 @@ and start a new chat before selecting it.
    `https://cypher.hoerl.org/mcp`, choose **No authentication**, and select
    **Create as a plugin**. Then install/connect it.
 3. Start a new chat, type **@**, select **Cypher** from the picker, and ask to
-   open the portal.
+   open Cypher.
 
 A public Cypher directory listing is not yet established. Custom MCP access
 and menu labels depend on your account and workspace. A custom connection does
@@ -73,7 +75,7 @@ codex plugin add cypher@cypher-shared
    Cypher tools through its tool registry. A missing tool in the initial list
    does not prove it is unavailable. Call `open_portal`
    with `{}` through the connected tool. If this chat cannot discover new tools,
-   restart the host and open a new chat, select Cypher, and ask to open the portal.
+   restart the host and open a new chat, select Cypher, and ask to open Cypher.
    Report installation and portal rendering separately. Never open a browser
    fallback while inline launch is pending. Keep the response to one next step.
 
@@ -117,7 +119,7 @@ If no accessible listing is found, use ChatGPT's custom MCP setup when available
 2. Set the server URL to `https://cypher.hoerl.org/mcp` and choose **No
    authentication**. Review the host's notice and choose **Create as a plugin**.
 3. Install/connect the resulting plugin, select **@Cypher** from the picker in
-   a chat, and ask to open the portal.
+   a chat, and ask to open Cypher.
 
 Menu labels and custom connections depend on the account and workspace policy.
 If those controls are absent, explain the missing access. Do not claim that
