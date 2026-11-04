@@ -4,43 +4,57 @@
 
 ![Cypher](plugins/cypher/assets/icon.png)
 
-## Codex App
+## Install
 
-Copy this into a Codex chat. Codex runs the bash commands for you; you do not
-need to open Terminal yourself. Complete any permission prompt in the app.
+Give your coding agent this prompt:
 
 ```text
-Install the full Cypher plugin in Codex by running these bash commands for me:
-
-codex plugin marketplace add https://github.com/hoerl/cypher.git --ref main &&
-codex plugin add cypher@cypher-shared
-
-Reuse an existing installation. Follow any required permission prompts. After installation, refresh the available tools and open Cypher inline with open_portal. If a new chat is required, tell me to start one and select @Cypher. Do not open a browser fallback.
+Install this plugin: https://github.com/hoerl/cypher. Then open Cypher inline in this chat.
 ```
 
-After installation, type **@** and select **Cypher** from the picker to open its
-portal inline. If the plugin is not available in the current chat, restart Codex
-and start a new chat before selecting it.
+In the Codex app, paste the prompt into chat. The agent runs the installation
+commands for you; no separate Terminal window, manual clone, build, local server,
+or developer credentials are needed. Git and Codex plugin support must be
+available to that agent. Complete any required host permission prompts.
 
-## ChatGPT
+## Instructions for Agents
 
-1. Open [Plugins](https://chatgpt.com/plugins). If Cypher is available to your
-   account, open its listing and choose **Install** / **Connect**.
-2. If no listing is available and your account supports custom MCP, choose
-   **+ → Add custom MCP server**. Name it **Cypher**, enter
-   `https://cypher.hoerl.org/mcp`, choose **No authentication**, and select
-   **Create as a plugin**. Then install/connect it.
-3. Start a new chat, type **@**, select **Cypher** from the picker, and ask to
-   open the portal.
+Choose the current host. Reuse an existing Cypher connection instead of creating
+a duplicate. Install the full plugin in Codex; use native plugin controls in
+ChatGPT. Reading this repository alone does not install anything.
 
-A public Cypher directory listing is not yet established. Custom MCP access
-and menu labels depend on your account and workspace. A custom connection does
-not include the packaged icon or launch skill. Codex bash commands do not install
-plugins in ChatGPT web. If custom MCP is unavailable, an accessible shared or
-public Cypher listing is needed.
+### Codex
 
-## Installation Details
+For a new installation, run:
 
-See [INSTALL.md](INSTALL.md) for verification and existing-install recovery.
-This repository contains only installation materials; the app connects to
-https://cypher.hoerl.org/mcp. No local server or developer credentials are needed.
+```sh
+codex plugin marketplace add https://github.com/hoerl/cypher.git --ref main
+codex plugin add cypher@cypher-shared
+```
+
+Verify the plugin is enabled. Refresh the host's tools and discover Cypher's
+`open_portal` tool, then call it with `{}` to open the real portal inline.
+If the host needs a new chat, give that one next step. Once installed, the user
+can type **@** and select **Cypher** from the picker to open it.
+
+Use the host's supported execution and permission flow. For an existing local
+marketplace, conflicting registration, or stale tools, follow [INSTALL.md](INSTALL.md).
+Do not replace the full plugin with a bare MCP connection or open a browser fallback.
+
+### ChatGPT
+
+Use an accessible Cypher listing in [Plugins](https://chatgpt.com/plugins), then
+install/connect it through the host's native controls. A public listing is not
+yet established; do not invent an install link or run Codex commands for ChatGPT web.
+
+If no listing is accessible and the account supports custom MCP, add
+`https://cypher.hoerl.org/mcp` with **No authentication**, choose **Create as a
+plugin**, then install/connect it. Select **@Cypher** in a new chat and ask to
+open the portal. This custom connection does not import the packaged icon or skill.
+If custom MCP is unavailable, an accessible shared or public listing is required.
+
+## Repository Contents
+
+Only installation materials. Application code, credentials, databases, and
+application Git history are not included. The plugin uses the hosted endpoint
+`https://cypher.hoerl.org/mcp`. See [INSTALL.md](INSTALL.md) for detailed setup.
