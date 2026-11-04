@@ -4,29 +4,27 @@
 
 ![Cypher](plugins/cypher/assets/icon.png)
 
-## Install in Codex
+## Install
 
-```sh
-codex plugin marketplace add https://github.com/hoerl/cypher.git --ref main
-codex plugin add cypher@cypher-shared
+Paste this into your chat:
+
+```text
+Install Cypher from https://github.com/hoerl/cypher using https://raw.githubusercontent.com/hoerl/cypher/main/INSTALL.md, then open the portal.
 ```
 
-Refresh plugins, then select Cypher in a new chat and ask to open the portal.
-This installs the full plugin with its icon, subline, launch skill, and hosted connection.
-No local app server or developer credentials are needed.
+[The guide](INSTALL.md) uses the current host's installation flow, just like
+Arcade: a Git-backed marketplace in Codex, or native plugin discovery and
+connection in ChatGPT. ChatGPT accounts without an accessible listing need
+permission to add a custom MCP connection. Complete any host-required approval.
 
-## Install in ChatGPT
+## Open
 
-See [the host-specific installation guide](INSTALL.md). There is no public
-ChatGPT directory listing yet. A Codex marketplace install does not configure
-ChatGPT web; use an accessible personal/shared plugin or custom MCP setup.
-
-You can also ask your assistant:
-
-> Install Cypher using https://cypher.hoerl.org/INSTALL.md, then open the portal.
+Select **@Cypher** in a supported chat and ask to open the portal.
+The hosted connection needs no local server or developer credentials.
 
 ## Repository contents
 
-This repository contains only public installation materials. The application,
-server, database, credentials, and application Git history are not included.
+Only installation materials: the guide, marketplace manifest, plugin manifest,
+icon, launch skill, and hosted MCP configuration. Application code, credentials,
+databases, and application Git history are not included.
 The plugin connects to https://cypher.hoerl.org/mcp.
