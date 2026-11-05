@@ -1,0 +1,14 @@
+{
+  "name": "cypher",
+  "owner": {
+    "name": "Hoerl"
+  },
+  "description": "Cypher: human-only chatrooms for Claude Code.",
+  "plugins": [
+    {
+      "name": "cypher",
+      "source": "./plugins/cypher-claude",
+      "description": "Human-only chatrooms, verified with World ID. Ask Claude to open Cypher, or run /cypher for a phone QR code."
+    }
+  ]
+}
