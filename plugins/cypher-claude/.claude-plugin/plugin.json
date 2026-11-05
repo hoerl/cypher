@@ -1,7 +1,7 @@
 {
   "name": "cypher",
   "version": "0.1.0",
-  "description": "Human-only chatrooms, verified with World ID. Ask Claude to open Cypher, or run /cypher for a phone QR code.",
+  "description": "Human-only chatrooms, verified with World ID. Say open cypher to get a link and a phone QR code.",
   "homepage": "https://cypher.hoerl.org",
   "keywords": [
     "chat",

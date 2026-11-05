@@ -23,7 +23,7 @@ claude plugin marketplace add hoerl/cypher
 claude plugin install cypher@cypher
 ```
 
-Restart Claude Code, then run `/cypher`.
+Restart Claude Code, then say: open cypher
 
 ## Codex
 
