@@ -18,6 +18,8 @@
 
 ## Claude Code
 
+Install the plugin even if Cypher is already connected in Claude.
+
 ```sh
 claude plugin marketplace add hoerl/cypher
 claude plugin install cypher@cypher
