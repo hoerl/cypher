@@ -21,7 +21,7 @@ Arrival messages for an interactive app:
 
 Do not invent a count. If discovery or launch fails, report the specific failure briefly. Do not claim success or invent setup instructions.
 
-The `/cypher` command is a terminal alternative that retrieves a browser link and QR card. Follow its command instructions. Do not call both the command and the launch tool for one request.
+The `/cypher` command, which the person types, opens the live room in a pane beside the chat; it needs no tool call. Do not call the launch tool when the person has just run `/cypher`.
 
 ## Privacy and scope
 
