@@ -25,7 +25,8 @@ claude plugin marketplace add hoerl/cypher
 claude plugin install cypher@cypher
 ```
 
-Restart Claude Code, then say: open cypher
+Restart Claude Code, then run `/cypher` to open the room in a pane beside the chat.
+It needs Node.js 22 or newer.
 
 ## Codex
 

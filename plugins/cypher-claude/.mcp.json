@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "cypher": {
-      "type": "http",
-      "url": "https://cypher.hoerl.org/code/mcp"
-    }
-  }
-}
