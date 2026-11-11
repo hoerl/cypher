@@ -60,6 +60,8 @@ const STROKES_KEPT = 32
 const SHARE = 2
 const COLUMNS_PER_ROW = 3
 const MIN_ROWS = 12
+// The desktop pane's own title bar, which the window's rows include.
+const DESKTOP_FRAME_ROWS = 2
 type Size = { rows: number; columns: number }
 
 // Nothing to ask for until a terminal has been measured (headless, or a
@@ -85,6 +87,9 @@ let server: string | null = null
 // fixed for the session. What it gave, newest last; ids only ever rise, so a
 // pane that outlives a reload of this module still tells new from old.
 let fielded = false
+// The fullscreen tip waits for the first drawing: only a render names the
+// surface, and the desktop app has no fullscreen setting to suggest.
+let tipPending = false
 let strokes: Stroke[] = []
 let strokeId = Date.now()
 // What the field is drawn with (a new `draft` is a new, empty-handed field)
@@ -345,7 +350,7 @@ export const register: Register = on => {
       held = ''
       // The room only while you can see it: no pane, no connection.
       if (await showPane($, true)) {
-        await tip($)
+        tipPending = true
         await startHelper($, inviteOf(e.args))
       }
     } catch (error) {
@@ -393,7 +398,16 @@ export const register: Register = on => {
     // The drawing knows its layout where the surface says; /cypher's word
     // stands until then, and after a reload of this module.
     if (e.viewport?.isFullscreen !== undefined) fielded = !e.viewport.isFullscreen
+    if (tipPending) {
+      tipPending = false
+      if (e.surface === 'terminal') void tip($)
+    }
     const withField = fielded && e.surface === 'terminal'
+    // The desktop app gives the pane the window's height, but its bodyRows
+    // can be the few rows the tree asked for: fill the window there.
+    const rows = e.surface === 'desktop'
+      ? Math.max(e.props.scroll.bodyRows, (e.viewport?.rows ?? 0) - DESKTOP_FRAME_ROWS)
+      : e.props.scroll.bodyRows - Number(withField)
     const room = (
       <Client
         key={CLIENT_KEY}
@@ -411,7 +425,7 @@ export const register: Register = on => {
           strokes: withField ? strokes : null,
         }}
         width={e.props.bodyColumns}
-        height={e.props.scroll.bodyRows - Number(withField)}
+        height={rows}
       />
     )
     if (!withField) return room
