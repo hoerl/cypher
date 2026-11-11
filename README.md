@@ -9,7 +9,7 @@ Cypher is a secret chatroom inside AI.
 Give your AI agent this prompt:
 
 ```text
-Install this plugin: https://github.com/hoerl/cypher. Then open Cypher inline in this chat. Show only short status updates, such as “Installing Cypher…” and “Opening Cypher…”. If you need me to act, give me just the next step.
+Install this plugin: https://github.com/hoerl/cypher. Then open Cypher using the host-specific instructions: the terminal launcher in Codex CLI, or the inline app in supported desktop hosts. Show only short status updates, such as “Installing Cypher…” and “Opening Cypher…”. If you need me to act, give me just the next step.
 ```
 
 The agent runs the install commands where the host allows it. You do not need
@@ -46,7 +46,8 @@ Rules:
 | `plugins/cypher` | Codex plugin |
 | `plugins/cypher-claude` | Claude Code plugin |
 
-Not included: application code, credentials, databases, and application Git
+The Codex plugin includes a packaged terminal client.
+Not included: the application source project, credentials, databases, and application Git
 history.
 
 Service address: `https://cypherchat.org`. The former address
