@@ -52,6 +52,19 @@ const LOCKED = '#######'
 export const SEPARATOR = ' · '
 const INVITE_ACTION = 'Copy invite link'
 const INVITE_COPIED = 'invite link copied'
+const LINK_COPIED = 'link copied'
+// On a sign-in page: the key that copies its link, as Claude's own sign-in has.
+const COPY_KEY = 'c'
+// A guest has no name: the header offers the way in, and a first message
+// waits while they pick one (the app's claim card, in the app's words).
+const SIGN_IN = 'sign in'
+const YOU = 'you'
+const CLAIM_TITLE = 'Choose a Cypher name'
+const CLAIM_PLACEHOLDER = 'Pick a name'
+const CLAIM_NAMELESS = '…'
+const CLAIM_HINT = 'enter join the chat · /signin sign in · delete cancel'
+const CLAIM_HINT_FIELD = 'enter join the chat · /signin sign in · ↓ cancel'
+const CLAIM_ENTER = 'join'
 const HELP_GAP = 2
 // Runs of spaces: what separates a command from its argument. Splits
 // "/join  lobby" into two; "/join" stays one.
@@ -102,7 +115,7 @@ const LOCAL: Record<string, Panel> = {
   '/help': 'help',
 }
 const HELP: Array<[string, string]> = [
-  ['/signin', 'Sign in to keep your name'],
+  ['/signin', 'Sign in to chat'],
   ['/verify', 'Verify with World ID'],
   ['/signout', 'Sign out'],
   ['/open', 'Open the sign-in link'],
@@ -131,7 +144,7 @@ const HELP_KEYS_FIELD = '↑↓ move · enter open'
 const HELP_TYPING = 'Type to chat. Enter sends. Tab completes a command.'
 const HELP_TYPING_FIELD = 'Type to chat. Enter sends.'
 const IDENTITY_LABEL: Record<string, string> = {
-  guest: 'guest · sign in to keep your name',
+  guest: 'guest · sign in to chat',
   account: 'signed in · not verified',
   human: 'verified human ✓',
 }
@@ -194,11 +207,14 @@ export class Session {
   private note = ''
   private exited = false
   private readonly drafts = new Map<string, Draft>()
+  // A guest's message, waiting for them to sign in: it goes back to the
+  // composer once they have, and only their Enter sends it.
+  private held: { roomId: string | null; text: string } | null = null
   // What the host has not been told yet, and messages not yet confirmed.
   private readonly outbox: Report[] = []
   private readonly unsent = new Map<number, { roomId: string | null; text: string }>()
   // Links handed to the host's clipboard, until it says whether each took.
-  private readonly copying = new Map<number, string>()
+  private readonly copying = new Map<number, { link: string; done: string }>()
   private nextId = 1
   private posted = ''
 
@@ -213,6 +229,8 @@ export class Session {
   // for that room's draft.
   receive(view: RoomView) {
     const moved = view.roomId !== this.view.roomId
+    const signedIn = view.self !== null && view.self.identity !== 'guest'
+    if (this.held && (moved || signedIn)) this.release()
     if (moved && this.panel === null) this.rememberDraft()
     this.view = view
     if (moved && this.panel === null) this.restoreInput()
@@ -225,10 +243,10 @@ export class Session {
   answer({ id, ok }: Answer) {
     // A copy says it worked only once the clipboard took it; a link that
     // could not be copied is shown, to select by hand.
-    const link = this.copying.get(id)
-    if (link !== undefined) {
+    const copy = this.copying.get(id)
+    if (copy !== undefined) {
       this.copying.delete(id)
-      this.note = ok ? INVITE_COPIED : clean(link)
+      this.note = ok ? copy.done : clean(copy.link)
       return
     }
     const unsent = this.unsent.get(id)
@@ -246,6 +264,21 @@ export class Session {
 
   get guest(): boolean {
     return this.view.self?.identity !== 'account' && this.view.self?.identity !== 'human'
+  }
+
+  // What the header's right end says: your name, or the way to get one.
+  get badge(): string {
+    return this.nameless ? SIGN_IN : this.name
+  }
+
+  // A guest the server has told us about, not a pane still connecting.
+  get nameless(): boolean {
+    return this.view.self?.identity === 'guest'
+  }
+
+  // Picking a name for the message that waits; a sign-in page covers it.
+  get claiming(): boolean {
+    return this.held !== null && !this.handoff
   }
 
   get room(): RoomInfo | undefined {
@@ -301,7 +334,8 @@ export class Session {
     if (this.fielded) return this.fieldHint
     // The composer already says "click to type" where there is one.
     if (!this.focused && this.placeholder === null) return 'click to use the keyboard'
-    if (this.handoff) return 'enter opens the link · delete cancels'
+    if (this.handoff) return 'enter opens the link · c copies · delete cancels'
+    if (this.claiming) return CLAIM_HINT
     const hints: Record<string, string> = {
       theme: '↑↓ preview · enter save · delete cancel',
       rooms: '↑↓ select · enter join · type to search · delete back',
@@ -311,26 +345,29 @@ export class Session {
     if (this.panel) return hints[this.panel] ?? 'delete back'
     // Most useful first: a narrow pane cuts the tail.
     if (this.browsing && this.input) return '←→ tabs · type to edit your draft'
-    return this.guest ? '←→ tabs · ? help · /signin keeps your name' : '←→ tabs · ↑ next · ? help'
+    return this.guest ? '←→ tabs · ? help · /signin' : '←→ tabs · ↑ next · ? help'
   }
 
   // What Enter does now, for the label beside Claude's text field.
   get enterLabel(): string {
     if (this.handoff) return 'open'
+    if (this.claiming) return CLAIM_ENTER
     return FIELD_ENTER[String(this.panel)] ?? 'send'
   }
 
   private get fieldHint(): string {
     if (!this.focused) return 'ctrl+x tab to type'
-    if (this.handoff) return 'enter opens the link · ↓ cancels'
+    if (this.handoff) return 'enter opens the link · ↑ copies · ↓ cancels'
+    if (this.claiming) return CLAIM_HINT_FIELD
     if (this.panel === 'who' && !this.view.people.length) return FIELD_TABS
     if (this.panel) return FIELD_HINTS[this.panel] ?? FIELD_TABS
-    return this.guest ? '↑↓ tabs · /help · /signin keeps your name' : '↑↓ tabs · /help'
+    return this.guest ? '↑↓ tabs · /help · /signin' : '↑↓ tabs · /help'
   }
 
   // What an empty composer says it is for; null where there is no composer.
   get placeholder(): string | null {
     if (this.handoff) return null
+    if (this.claiming) return CLAIM_PLACEHOLDER
     if (this.panel === null) return this.room ? `message #${clean(this.room.topic)}` : 'connecting…'
     return this.panel === 'rooms' ? 'search rooms' : null
   }
@@ -404,6 +441,11 @@ export class Session {
     if (!this.handoff) this.switchView(index - this.activeTab)
   }
 
+  // The header's "sign in": the page /signin opens.
+  signIn() {
+    if (this.nameless && !this.handoff) this.ask({ type: 'signin' })
+  }
+
   highlight(item: number) {
     if (this.menu()) this.selected = item
   }
@@ -420,9 +462,20 @@ export class Session {
       this.note = 'Join a room first.'
       return
     }
+    this.copy(link, INVITE_COPIED)
+  }
+
+  // Hands a link to the host's clipboard; `done` is said once it took.
+  private copy(link: string, done: string) {
     const id = this.nextId++
-    this.copying.set(id, link)
+    this.copying.set(id, { link, done })
     this.outbox.push({ id, copy: link })
+  }
+
+  // The sign-in page's link, to paste into a browser.
+  private copySignin() {
+    const url = this.view.invitation?.url
+    if (url) this.copy(url, LINK_COPIED)
   }
 
   // What the host is to do, oldest first: intents, then a changed profile or
@@ -480,6 +533,11 @@ export class Session {
   private step(direction: number) {
     if (this.handoff) {
       if (direction > 0) this.ask({ type: 'cancel' })
+      else this.copySignin()
+      return
+    }
+    if (this.claiming) {
+      if (direction > 0) this.back()
       return
     }
     const to = this.selected + direction
@@ -508,7 +566,24 @@ export class Session {
     this.cursor = saved?.cursor ?? 0
   }
 
+  // The waiting message goes back where it was typed: the composer when
+  // its room is on screen, else that room's draft. Nothing is sent.
+  private release() {
+    const held = this.held
+    if (!held) return
+    this.held = null
+    const draft = { input: held.text, cursor: chars(held.text).length }
+    if (this.panel !== null || held.roomId !== this.view.roomId) {
+      this.drafts.set(held.roomId ?? '', draft)
+      return
+    }
+    this.input = draft.input
+    this.cursor = draft.cursor
+  }
+
+  // Leaving for anywhere gives up on the name: the message is a draft again.
   private open(panel: Panel) {
+    this.release()
     this.rememberDraft()
     this.panel = panel
     this.selected = panel === 'theme' ? Math.max(0, themes.indexOf(this.theme)) : 0
@@ -540,6 +615,7 @@ export class Session {
 
   private pressInHandoff(key: string) {
     if (key === 'return') this.ask({ type: 'open' })
+    else if (key.toLowerCase() === COPY_KEY) this.copySignin()
     else if (key === 'backspace' || key === 'delete') this.ask({ type: 'cancel' })
   }
 
@@ -619,6 +695,18 @@ export class Session {
       this.ask({ type: 'command', text })
       return
     }
+    // What is typed over a waiting message is the name to post it under; a
+    // name the server refuses comes back to be changed.
+    if (this.claiming) {
+      this.unsent.set(this.ask({ type: 'claim', name: text }), { roomId: this.view.roomId, text })
+      return
+    }
+    // No name yet: the message waits here while they pick one.
+    if (this.nameless) {
+      this.held = { roomId: this.view.roomId, text }
+      this.scroll = 0
+      return
+    }
     const id = this.ask({ type: 'say', text })
     this.unsent.set(id, { roomId: this.view.roomId, text })
     this.drafts.delete(this.view.roomId ?? '')
@@ -693,9 +781,26 @@ export class Session {
   private chatRows(): Line[] {
     const { messages, people, self, connection } = this.view
     if (!self) return [{ text: connection === 'closed' ? 'Cypher is offline.' : 'connecting…', kind: 'dim' }]
+    if (this.claiming) return [...this.messageRows(), ...this.claimRows()]
     if (!messages.length) {
       return [{ text: people.length ? 'It’s quiet in here.' : 'you’re first here', kind: 'accent' }]
     }
+    return this.messageRows()
+  }
+
+  // The waiting message as it will read, under the name being typed, then
+  // what the composer is asking for.
+  private claimRows(): Line[] {
+    const nick = this.input.startsWith('/') || !this.input.trim() ? CLAIM_NAMELESS : this.input.trim()
+    return [
+      { text: `${nick}  ${this.held?.text ?? ''}`, nick, own: true, kind: 'own' },
+      { text: '', kind: 'dim' },
+      { text: CLAIM_TITLE, kind: 'accent' },
+    ]
+  }
+
+  private messageRows(): Line[] {
+    const { messages } = this.view
     return messages.flatMap((m, i): Line[] => {
       const before = messages[i - 1]
       const paused = before !== undefined && m.at - before.at >= GAP_MS
@@ -733,7 +838,7 @@ export class Session {
   private peopleRows(): Line[] {
     const self = this.view.self
     const you: Line[] = self
-      ? [{ text: `  ${nameOf({ name: self.name, verified: self.identity === 'human' })} · you`, kind: 'name' }]
+      ? [{ text: this.nameless ? `  ${YOU}` : `  ${nameOf({ name: self.name, verified: self.identity === 'human' })} · you`, kind: 'name' }]
       : []
     return [...you, ...this.view.people.map((p, i) => this.listRow(nameOf(p) + (p.muted ? ' · muted' : ''), i))]
   }
@@ -748,7 +853,8 @@ export class Session {
   }
 
   private themeRows(): Line[] {
-    const own: Line = { text: `${this.name}  your message`, nick: this.name, own: true, kind: 'own' }
+    const nick = this.nameless ? YOU : this.name
+    const own: Line = { text: `${nick}  your message`, nick, own: true, kind: 'own' }
     return [
       ...themes.map((name, i) => this.listRow(name + (name === this.theme ? ' · current' : ''), i)),
       { text: '', kind: 'dim' },

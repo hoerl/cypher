@@ -57,6 +57,8 @@ export type Intent =
   | { type: 'join'; roomId: string }
   | { type: 'mute'; memberId: string }
   | { type: 'signin' }
+  // A new account under this name: the guest's way in.
+  | { type: 'claim'; name: string }
   | { type: 'verify' }
   | { type: 'cancel' }
   | { type: 'open' }
@@ -77,6 +79,7 @@ export function isIntent(value: unknown): value is Intent {
   if (BARE.has(value.type)) return true
   if (TEXT.has(value.type)) return isString(value.text)
   if (value.type === 'join') return isString(value.roomId)
+  if (value.type === 'claim') return isString(value.name)
   if (value.type === 'mute') return isString(value.memberId)
   return false
 }

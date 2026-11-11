@@ -191,6 +191,7 @@ function point(event: ClientPointerEvent): boolean {
     if (target?.kind === 'step') session.goTab(session.activeTab + target.index)
     if (target?.kind === 'item') session.highlight(target.index)
     if (target?.kind === 'invite') session.copyInvite()
+    if (target?.kind === 'signin') session.signIn()
     return true
   }
   if (event.type === 'up') {
@@ -269,7 +270,8 @@ const View: ClientModule<Props, Frame> = (props, surface) => {
   const guest = session.guest
 
   // The header: your name never shrinks past a third of the row; it is cut.
-  const name = clip(session.name, Math.max(MIN_NAME, Math.floor(inner / (HALF + 1))))
+  const name = clip(session.badge, Math.max(MIN_NAME, Math.floor(inner / (HALF + 1))))
+  const signIn: Target | null = session.nameless ? { kind: 'signin', index: 0 } : null
   // Another server than Cypher's own is named in the header, never hidden.
   const elsewhere = props.server ? ` @ ${clip(props.server, Math.max(MIN_NAME, Math.floor(inner / (HALF + 1))))}` : ''
   // The room rides beside the brand in what the row can spare: all of it
@@ -302,8 +304,11 @@ const View: ClientModule<Props, Frame> = (props, surface) => {
       ]
     : [{ text: clip(session.roomLine, inner), target: null }]
 
+  // A guest's header ends in "sign in", on the tabs' row when they share it.
+  const badgeSpans = signIn ? [{ from: PAD + inner - width(name), to: PAD + inner, target: signIn }] : []
   hits = new Map([
-    [roomy ? 1 : 0, spansOf(strip, PAD + tabX)],
+    ...(roomy ? [[0, badgeSpans]] : []),
+    [roomy ? 1 : 0, [...spansOf(strip, PAD + tabX), ...(roomy ? [] : badgeSpans)]],
     ...(session.showsRoom ? [[roomRow, spansOf(roomLine, PAD)]] : []),
     ...lines.flatMap((line, i) =>
       line.item === undefined
@@ -402,7 +407,11 @@ const View: ClientModule<Props, Frame> = (props, surface) => {
       {place && <Text {...ink.dim}>{place}</Text>}
     </Text>
   )
-  const you = <Text {...(guest ? ink.dim : ink.self)}>{name}</Text>
+  const you = (
+    <Text {...(guest ? ink.dim : ink.self)} backgroundColor={signIn && same(hover, signIn) ? skin.hover : undefined}>
+      {name}
+    </Text>
+  )
   const spacer = roomy && <Text> </Text>
   const problem = props.problem ?? ''
   const footer = problem || session.notice || session.hint
