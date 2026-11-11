@@ -8,7 +8,9 @@
 // Backspace on an empty composer takes Escape's role: one step back.
 import type { ClientKeyEvent } from 'claude-code'
 
+import { inviteOf } from './contract'
 import type { Intent, Person, QrRun, RoomInfo, RoomView } from './contract'
+import { clip } from './layout'
 import { themes } from './profile'
 import type { Profile, Theme } from './profile'
 
@@ -25,9 +27,14 @@ export type Line = {
   qr?: QrRun[]
 }
 export type BodyKind = 'chat' | 'list' | 'page'
-// What the session asks the host for: keep a profile, close, or run an intent.
-export type Report = { profile: Profile } | { exit: true } | { id: number; intent: Intent }
+// What the session asks the host for: keep a profile, close, run an intent,
+// or put text (an invite link) on the clipboard.
+export type Report = { profile: Profile } | { exit: true } | { id: number; intent: Intent } | { id: number; copy: string }
 export type Answer = { id: number; ok: boolean }
+// What Claude's own text field hands the pane on the main screen, where no
+// click (and so no key) reaches it: the field's text as it changes, Enter
+// with the text, or a step off the field (↑ or shift+tab, ↓ or tab).
+export type Stroke = { id: number; text?: string; key?: 'return' | 'up' | 'down' }
 
 type Draft = { input: string; cursor: number }
 type Setting = 'name' | 'signin' | 'signout' | 'verify' | 'theme'
@@ -42,6 +49,9 @@ const GAP_MS = 300_000 // a pause this long gets a time stamp
 const THEME_PREVIEW = 4 // messages shown under the theme list
 const HOUR_MINUTE: Intl.DateTimeFormatOptions = { hour: '2-digit', minute: '2-digit', hour12: false }
 const LOCKED = '#######'
+export const SEPARATOR = ' · '
+const INVITE_ACTION = 'Copy invite link'
+const INVITE_COPIED = 'invite link copied'
 const HELP_GAP = 2
 // Runs of spaces: what separates a command from its argument. Splits
 // "/join  lobby" into two; "/join" stays one.
@@ -73,6 +83,7 @@ const COMMANDS = [
   '/open',
   '/rooms',
   '/join',
+  '/invite',
   '/who',
   '/nick',
   '/ignore',
@@ -96,13 +107,29 @@ const HELP: Array<[string, string]> = [
   ['/signout', 'Sign out'],
   ['/open', 'Open the sign-in link'],
   ['/rooms', 'Find a room'],
-  ['/join <room>', 'Move to a room'],
+  ['/join <room>', 'Move to a room, by name or invite'],
+  ['/invite', 'Copy this room’s invite link'],
   ['/who', 'See who is here'],
   ['/nick <name>', 'Choose your name'],
   ['/ignore <name>', 'Mute someone'],
   ['/theme', 'Choose a theme'],
   ['/exit', 'Close the pane'],
 ]
+// Hints where Claude's text field feeds the pane: only ↑↓, Enter and text
+// arrive, so ↑↓ walk a list's rows and then the tabs.
+const FIELD_TABS = '↑↓ tabs'
+const FIELD_HINTS: Record<string, string> = {
+  theme: '↑↓ preview · enter save',
+  rooms: '↑↓ select · enter join · type to search',
+  who: '↑↓ select · enter mute',
+  settings: '↑↓ select · enter change',
+}
+// What Enter does in the field, beside it: one word.
+const FIELD_ENTER: Record<string, string> = { rooms: 'join', who: 'mute', settings: 'change', theme: 'save' }
+const HELP_KEYS = '←→ / tab switch · ↑↓ select · enter open · delete back'
+const HELP_KEYS_FIELD = '↑↓ move · enter open'
+const HELP_TYPING = 'Type to chat. Enter sends. Tab completes a command.'
+const HELP_TYPING_FIELD = 'Type to chat. Enter sends.'
 const IDENTITY_LABEL: Record<string, string> = {
   guest: 'guest · sign in to keep your name',
   account: 'signed in · not verified',
@@ -137,6 +164,7 @@ const EMPTY: RoomView = {
   busy: false,
   self: null,
   roomId: null,
+  invite: null,
   rooms: [],
   locked: 0,
   people: [],
@@ -157,6 +185,9 @@ export class Session {
   // Whether a key or a click has reached the pane: a Client gets the keys
   // only after a click, and cannot ask whether it has them.
   focused = false
+  // Whether Claude's own text field stands in for the composer (the main
+  // screen): its strokes arrive through `take`, and the hints name its keys.
+  fielded = false
   // Whether the last move was between tabs (←→, Tab, a click on a tab).
   browsing = false
   // A problem only the pane knows about (a name /ignore cannot find).
@@ -166,6 +197,8 @@ export class Session {
   // What the host has not been told yet, and messages not yet confirmed.
   private readonly outbox: Report[] = []
   private readonly unsent = new Map<number, { roomId: string | null; text: string }>()
+  // Links handed to the host's clipboard, until it says whether each took.
+  private readonly copying = new Map<number, string>()
   private nextId = 1
   private posted = ''
 
@@ -190,6 +223,14 @@ export class Session {
   // The host's answer to an intent: a message that did not reach the room
   // comes back to an empty composer in its room.
   answer({ id, ok }: Answer) {
+    // A copy says it worked only once the clipboard took it; a link that
+    // could not be copied is shown, to select by hand.
+    const link = this.copying.get(id)
+    if (link !== undefined) {
+      this.copying.delete(id)
+      this.note = ok ? INVITE_COPIED : clean(link)
+      return
+    }
     const unsent = this.unsent.get(id)
     this.unsent.delete(id)
     if (ok || !unsent || this.input || this.panel !== null || unsent.roomId !== this.view.roomId) return
@@ -250,8 +291,14 @@ export class Session {
     return this.kind === 'list' ? this.selected : null
   }
 
+  // The room you are in, for the header; empty before there is one.
+  get roomName(): string {
+    return this.room ? `#${clean(this.room.topic)}` : ''
+  }
+
   // The keys that do something here, or how to get the keys at all.
   get hint(): string {
+    if (this.fielded) return this.fieldHint
     // The composer already says "click to type" where there is one.
     if (!this.focused && this.placeholder === null) return 'click to use the keyboard'
     if (this.handoff) return 'enter opens the link · delete cancels'
@@ -265,6 +312,20 @@ export class Session {
     // Most useful first: a narrow pane cuts the tail.
     if (this.browsing && this.input) return '←→ tabs · type to edit your draft'
     return this.guest ? '←→ tabs · ? help · /signin keeps your name' : '←→ tabs · ↑ next · ? help'
+  }
+
+  // What Enter does now, for the label beside Claude's text field.
+  get enterLabel(): string {
+    if (this.handoff) return 'open'
+    return FIELD_ENTER[String(this.panel)] ?? 'send'
+  }
+
+  private get fieldHint(): string {
+    if (!this.focused) return 'ctrl+x tab to type'
+    if (this.handoff) return 'enter opens the link · ↓ cancels'
+    if (this.panel === 'who' && !this.view.people.length) return FIELD_TABS
+    if (this.panel) return FIELD_HINTS[this.panel] ?? FIELD_TABS
+    return this.guest ? '↑↓ tabs · /help · /signin keeps your name' : '↑↓ tabs · /help'
   }
 
   // What an empty composer says it is for; null where there is no composer.
@@ -282,7 +343,12 @@ export class Session {
   get roomLine(): string {
     const note = CONNECTION_NOTE[this.view.connection] ?? ''
     if (!this.room) return `#…${note}`
-    return `#${clean(this.room.topic)} · ${this.view.people.length + 1} here${note}`
+    return `#${clean(this.room.topic)}${SEPARATOR}${this.view.people.length + 1} here${note}`
+  }
+
+  // The room line's one action, where there is a room to invite someone to.
+  get inviteAction(): string | null {
+    return this.view.invite ? INVITE_ACTION : null
   }
 
   get notice(): string {
@@ -319,11 +385,17 @@ export class Session {
     else if (key === 'backspace' || key === 'delete') this.erase(key)
     else if (!ctrl && !event.meta && !SPECIAL.has(key)) this.type(key)
 
-    // The rooms panel searches as you type.
-    if (this.panel === 'rooms' && !this.input.startsWith('/')) {
-      if (this.query !== this.input) this.selected = 0
-      this.query = this.input
-    }
+    this.search()
+  }
+
+  // One stroke from Claude's text field: its whole text, Enter, or a step.
+  take(stroke: Stroke) {
+    this.focused = true
+    this.note = ''
+    this.browsing = false
+    if (stroke.key === 'up' || stroke.key === 'down') return this.step(stroke.key === 'down' ? 1 : -1)
+    if (stroke.text !== undefined && !this.handoff) this.write(stroke.text)
+    if (stroke.key === 'return') this.press({ key: 'return' })
   }
 
   // ---- the pointer ----------------------------------------------------------
@@ -339,6 +411,18 @@ export class Session {
   choose(item: number) {
     this.highlight(item)
     this.enter()
+  }
+
+  // The room line's action, or /invite: hand this room's link to the clipboard.
+  copyInvite() {
+    const link = this.view.invite
+    if (!link) {
+      this.note = 'Join a room first.'
+      return
+    }
+    const id = this.nextId++
+    this.copying.set(id, link)
+    this.outbox.push({ id, copy: link })
   }
 
   // What the host is to do, oldest first: intents, then a changed profile or
@@ -372,6 +456,39 @@ export class Session {
       theme: () => themes.length,
     }
     return counts[String(this.panel)]?.() ?? 0
+  }
+
+  // The rooms panel searches as you type.
+  private search() {
+    if (this.panel !== 'rooms' || this.input.startsWith('/')) return
+    if (this.query !== this.input) this.selected = 0
+    this.query = this.input
+  }
+
+  // The field's text, whole: what `type` does one key at a time.
+  private write(text: string) {
+    this.input = chars(clean(text.split('\n').join(' ')))
+      .slice(0, MAX_INPUT)
+      .join('')
+    this.cursor = chars(this.input).length
+    this.search()
+  }
+
+  // One step along all the field's ↑↓ can reach: a list's rows, then the
+  // next tab (entered from its far end going back), so two keys walk the
+  // whole pane. On a sign-in page ↓ is the way out.
+  private step(direction: number) {
+    if (this.handoff) {
+      if (direction > 0) this.ask({ type: 'cancel' })
+      return
+    }
+    const to = this.selected + direction
+    if (this.menu() && to >= 0 && to < this.count()) {
+      this.selected = to
+      return
+    }
+    this.switchView(direction)
+    if (direction < 0 && this.menu()) this.selected = Math.max(0, this.count() - 1)
   }
 
   private move(direction: number) {
@@ -489,10 +606,13 @@ export class Session {
     this.input = ''
     this.cursor = 0
     if (local !== undefined) return this.open(local)
+    // The field types a lone ? as text, so there Enter is what asks.
+    if (this.fielded && text === '?') return this.open('help')
     if (command === '/exit') {
       this.exited = true
       return
     }
+    if (command === '/invite') return this.copyInvite()
     if (command === '/ignore') return this.ignore(rest.join(' '))
     if (command === '/join') return this.join(rest.join(' '))
     if (text.startsWith('/')) {
@@ -505,13 +625,21 @@ export class Session {
     this.scroll = 0
   }
 
-  // /join by topic, with or without its #. A name no room has opens the list.
+  // /join by an invite link or code, or by topic with or without its #. The
+  // room that carries the code wins, so a room named after a code or a link
+  // cannot take its invites; a link is never read as a name. Anything no room
+  // answers to opens the list.
   private join(name: string) {
+    const link = name.includes('join=')
+    const invite = inviteOf(name)
     const wanted = name.replace(/^#/, '').toLowerCase()
-    const room = this.view.rooms.find(r => r.topic.toLowerCase() === wanted)
+    const invited = invite ? this.view.rooms.find(r => r.code === invite) : undefined
+    const named = link ? undefined : this.view.rooms.find(r => r.topic.toLowerCase() === wanted)
+    const room = invited ?? named
     if (!room) {
       this.open('rooms')
-      this.note = name ? `No room is called ${clean(name)}. Pick one here.` : 'Pick a room here.'
+      if (link) this.note = 'That room is unavailable. Pick one here.'
+      else this.note = name ? `No room is called ${clean(name)}. Pick one here.` : 'Pick a room here.'
       return
     }
     if (room.id !== this.view.roomId) this.ask({ type: 'join', roomId: room.id })
@@ -587,7 +715,9 @@ export class Session {
     const search: Line[] = this.query ? [{ text: `search: ${this.query}`, kind: 'dim' }] : []
     const rooms = matches.map((r, i) => {
       const here = r.id === this.view.roomId ? ' · you' : ''
-      return this.listRow(`${('#' + clean(r.topic)).padEnd(ROOM_COLUMN)} ${r.count} here${here}`, i)
+      // A long name is cut to its column, so the counts stay in one line.
+      const name = clip('#' + clean(r.topic), ROOM_COLUMN).padEnd(ROOM_COLUMN)
+      return this.listRow(`${name} ${r.count} here${here}`, i)
     })
     const locked = this.query
       ? []
@@ -631,10 +761,10 @@ export class Session {
     const width = Math.max(...HELP.map(([command]) => command.length)) + HELP_GAP
     return [
       { text: 'help', kind: 'accent' },
-      { text: '←→ / tab switch · ↑↓ select · enter open · delete back', kind: 'dim' },
+      { text: this.fielded ? HELP_KEYS_FIELD : HELP_KEYS, kind: 'dim' },
       ...HELP.map(([command, about]): Line => ({ text: `${command.padEnd(width)}${about}`, kind: 'text' })),
       { text: '', kind: 'dim' },
-      { text: 'Type to chat. Enter sends. Tab completes a command.', kind: 'dim' },
+      { text: this.fielded ? HELP_TYPING_FIELD : HELP_TYPING, kind: 'dim' },
     ]
   }
 

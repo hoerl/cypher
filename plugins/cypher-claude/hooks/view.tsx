@@ -12,14 +12,18 @@
 // hangs under the tab that opened it. Depth comes from three background steps
 // (pane, hover, raised); nothing animates, since every change answers a key or
 // a click the person just made.
+//
+// On the main screen no click reaches a Client, so no key does either. There
+// the host draws Claude's own text field under this one (`fielded`), relays
+// what it is given as strokes, and this draws no composer of its own.
 import type { ClientModule, ClientPointerEvent, ClientSurface } from 'claude-code'
 
 import { clip, same, spansOf, tabStrip, targetAt, width, wrapped } from './layout'
 import type { HitMap, Segment, Target } from './layout'
 import type { QrRun, RoomView } from './contract'
 import type { Profile } from './profile'
-import { Session, tabs } from './session'
-import type { Answer, Line } from './session'
+import { SEPARATOR, Session, tabs } from './session'
+import type { Answer, Line, Report, Stroke } from './session'
 import { skinFor } from './skins'
 import type { Skin } from './skins'
 
@@ -40,7 +44,13 @@ type Props = {
   server?: string | null
   docked?: boolean
   paneFocused?: boolean
+  // Claude's text field stands in for the composer; `strokes` is what it gave.
+  fielded?: boolean
+  strokes?: Stroke[] | null
 }
+// What the host's text field should hold, say when empty, and call Enter.
+type Field = { value: string; placeholder: string; enter: string }
+const NO_FIELD: Field = { value: '', placeholder: '', enter: '' }
 type Frame = { frame: number }
 // A body row as drawn: wrapped, keyed, and a message's continuation indented
 // to the message column.
@@ -55,6 +65,7 @@ const HALF = 2
 const NICK_GAP = 2 // cells between the name column and the message
 const NICK_COLUMN_MAX = 14 // longer names push their own message right
 const MIN_NAME = 6
+const MIN_PLACE = 4 // a room name cut shorter than this says nothing
 const BRAND = 'cypher'
 const BRAND_GAP = '  '
 const PROMPT = '› '
@@ -72,6 +83,9 @@ let hover: Target | null = null
 let pressed: Target | null = null
 let hits: HitMap = new Map()
 let paneWasFocused = false
+// The last stroke taken, and the field as this side believes it stands.
+let seenStroke = 0
+let shown: Field = NO_FIELD
 
 // Whether the keys reach the Client. It cannot ask, so it infers: a click or
 // a key in it says yes; the pane losing Claude's focus (a click on the prompt,
@@ -92,6 +106,28 @@ function absorb(props: Props) {
     seenAnswer = props.answer.id
     session.answer(props.answer)
   }
+}
+
+// Strokes from Claude's text field, oldest first. Enter empties the field by
+// itself; any other text is what the field now holds.
+function absorbStrokes(strokes: Stroke[]) {
+  strokes
+    .filter(stroke => stroke.id > seenStroke)
+    .forEach(stroke => {
+      seenStroke = stroke.id
+      if (stroke.text !== undefined) shown = { ...shown, value: stroke.key === 'return' ? '' : stroke.text }
+      session.take(stroke)
+    })
+}
+
+// The field is the person's until the session changes it (a line sent, a
+// draft restored, /nick filled in) or the tab wants another placeholder:
+// then the host is told what to draw.
+function fieldNews(): Field | null {
+  const next = { value: session.input, placeholder: session.placeholder ?? '', enter: session.enterLabel }
+  const changed = JSON.stringify(next) !== JSON.stringify(shown)
+  shown = next
+  return changed ? next : null
 }
 
 // Every row wrapped to `room`; messages wrap beside the name column.
@@ -154,6 +190,7 @@ function point(event: ClientPointerEvent): boolean {
     if (target?.kind === 'tab') session.goTab(target.index)
     if (target?.kind === 'step') session.goTab(session.activeTab + target.index)
     if (target?.kind === 'item') session.highlight(target.index)
+    if (target?.kind === 'invite') session.copyInvite()
     return true
   }
   if (event.type === 'up') {
@@ -174,8 +211,11 @@ const paint = (skin: Skin) => ({
   self: { color: skin.self },
 })
 
+// One post a frame is all a Client gets, so everything goes in one.
 function deliver(surface: ClientSurface<Frame>) {
-  session.reports().forEach(report => surface.post(report))
+  const reports: Report[] = session.reports()
+  const news = session.fielded ? fieldNews() : null
+  if (reports.length || news) surface.post({ reports, ...(news ? { field: news } : {}) })
 }
 
 function redraw(surface: ClientSurface<Frame>) {
@@ -189,6 +229,9 @@ const View: ClientModule<Props, Frame> = (props, surface) => {
     seenSeq = -1
     seenAnswer = -1
     paneWasFocused = false
+    // Strokes from before this instance are not replayed: one may be a sent line.
+    seenStroke = Math.max(0, ...(props.strokes ?? []).map(stroke => stroke.id))
+    shown = NO_FIELD
     hover = null
     pressed = null
     redraw(surface)
@@ -205,7 +248,14 @@ const View: ClientModule<Props, Frame> = (props, surface) => {
   })
 
   absorb(props)
-  followFocus(props.paneFocused === true)
+  const fielded = props.fielded === true
+  session.fielded = fielded
+  if (fielded) {
+    absorbStrokes(props.strokes ?? [])
+    // The field has the keys whenever the pane does.
+    session.focused = props.paneFocused === true
+    deliver(surface)
+  } else followFocus(props.paneFocused === true)
   const live = session.focused
   // The divider's colors are Claude's own (theme keys), as on the dock's left.
   const edge = props.docked ? (live ? 'permission' : 'inactive') : null
@@ -222,11 +272,17 @@ const View: ClientModule<Props, Frame> = (props, surface) => {
   const name = clip(session.name, Math.max(MIN_NAME, Math.floor(inner / (HALF + 1))))
   // Another server than Cypher's own is named in the header, never hidden.
   const elsewhere = props.server ? ` @ ${clip(props.server, Math.max(MIN_NAME, Math.floor(inner / (HALF + 1))))}` : ''
-  const tabX = roomy ? 0 : width(BRAND + elsewhere + BRAND_GAP)
+  // The room rides beside the brand in what the row can spare: all of it
+  // when the tabs have their own row, else what they leave as whole pills.
+  const everyPill = tabStrip(labels, session.activeTab, Number.MAX_SAFE_INTEGER)
+  const pills = everyPill.reduce((sum, pill) => sum + width(pill.text), 0)
+  const spare = inner - width(BRAND + elsewhere) - width(name) - 1 - (roomy ? 0 : width(BRAND_GAP) + pills)
+  const place = session.roomName && spare > MIN_PLACE ? ` ${clip(session.roomName, spare - 1)}` : ''
+  const tabX = roomy ? 0 : width(BRAND + elsewhere + place + BRAND_GAP)
   const strip = tabStrip(labels, session.activeTab, roomy ? inner : inner - tabX - width(name) - 1)
 
   // Rows: header [+ tabs] [+ room] [+ spacer] | body | [spacer] [composer] hint.
-  const composer = session.placeholder !== null || session.input !== ''
+  const composer = !fielded && (session.placeholder !== null || session.input !== '')
   const top = 1 + Number(roomy) + Number(session.showsRoom) + Number(roomy)
   const bottom = Number(roomy) + Number(composer) + 1
   const space = Math.max(1, height - top - bottom)
@@ -234,8 +290,21 @@ const View: ClientModule<Props, Frame> = (props, surface) => {
   const lines = bodyLines(inner, space, column)
   const firstLine = top + (session.kind === 'chat' ? space - lines.length : 0)
 
+  // The room line: where you are and who is here, then its one action when
+  // the row has room for all of it. A narrow pane keeps /invite.
+  const action = session.showsRoom ? session.inviteAction : null
+  const roomRow = 1 + Number(roomy)
+  const whole = action !== null && width(session.roomLine + SEPARATOR + action) <= inner
+  const roomLine: Segment[] = whole
+    ? [
+        { text: session.roomLine + SEPARATOR, target: null },
+        { text: action, target: { kind: 'invite', index: 0 } },
+      ]
+    : [{ text: clip(session.roomLine, inner), target: null }]
+
   hits = new Map([
     [roomy ? 1 : 0, spansOf(strip, PAD + tabX)],
+    ...(session.showsRoom ? [[roomRow, spansOf(roomLine, PAD)]] : []),
     ...lines.flatMap((line, i) =>
       line.item === undefined
         ? []
@@ -330,6 +399,7 @@ const View: ClientModule<Props, Frame> = (props, surface) => {
         {BRAND}
       </Text>
       {elsewhere && <Text {...ink.text}>{elsewhere}</Text>}
+      {place && <Text {...ink.dim}>{place}</Text>}
     </Text>
   )
   const you = <Text {...(guest ? ink.dim : ink.self)}>{name}</Text>
@@ -355,7 +425,16 @@ const View: ClientModule<Props, Frame> = (props, surface) => {
         {roomy && <Text>{strip.map(segment)}</Text>}
         {session.showsRoom && (
           <Text {...ink.dim}>
-            {clip(session.roomLine, inner)}
+            {roomLine.map((seg, i) =>
+              // The action reads as text among the dim facts, and lights under the pointer.
+              seg.target ? (
+                <Text key={'room-' + i} {...ink.text} backgroundColor={same(hover, seg.target) ? skin.hover : undefined}>
+                  {seg.text}
+                </Text>
+              ) : (
+                seg.text
+              ),
+            )}
           </Text>
         )}
         {spacer}

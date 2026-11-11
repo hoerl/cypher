@@ -14,7 +14,8 @@ export type Identity = 'guest' | 'account' | 'human'
 export type Connection = 'connecting' | 'connected' | 'reconnecting' | 'closed'
 
 export type Person = { id: string; name: string; verified: boolean; muted: boolean }
-export type RoomInfo = { id: string; topic: string; count: number; human: boolean }
+// `code`: what an invite to this room carries.
+export type RoomInfo = { id: string; topic: string; count: number; human: boolean; code: string | null }
 export type Message = {
   id: string
   author: string
@@ -34,6 +35,8 @@ export type RoomView = {
   busy: boolean
   self: { name: string; identity: Identity; needsName: boolean } | null
   roomId: string | null
+  // The link that brings someone to your room; null with no room.
+  invite: string | null
   rooms: RoomInfo[]
   locked: number
   // The people in your room, you not among them.
@@ -85,4 +88,20 @@ export function isEvent(value: unknown): value is Event {
   if (value.type === 'ready') return isString(value.socket) && isString(value.token)
   if (value.type === 'view') return isRecord(value.view) && Array.isArray(value.view.messages)
   return value.type === 'fatal' && isString(value.message)
+}
+
+// The code inside an invite link. Matches "?join=k7f2qx" and "&join=K7F2QX."
+// (a sentence's period after it); rejects "?join=K7F2QXY" and "?join=ABC101".
+// https://regex101.com/?regex=%5B%3F%26%5Djoin%3D%28%5BA-Za-z2-9%5D%7B6%7D%29%28%3F%21%5BA-Za-z0-9%5D%29&testString=https%3A%2F%2Fcypherchat.org%2F%3Fjoin%3Dk7f2qx.
+const INVITE_LINK = /[?&]join=([A-Za-z2-9]{6})(?![A-Za-z0-9])/
+// A code on its own. Matches "K7F2QX" and "k7f2qx"; rejects "lobby" and "ABC101".
+// https://regex101.com/?regex=%5E%5BA-Za-z2-9%5D%7B6%7D%24&testString=K7F2QX
+const INVITE_BARE = /^[A-Za-z2-9]{6}$/
+
+// The code in a pasted invite, as src/shared/contracts.ts's inviteCode reads
+// it (a hooks module cannot import that file).
+export function inviteOf(text: string): string | null {
+  const pasted = text.trim()
+  const code = INVITE_LINK.exec(pasted)?.[1] ?? (INVITE_BARE.test(pasted) ? pasted : null)
+  return code?.toUpperCase() ?? null
 }

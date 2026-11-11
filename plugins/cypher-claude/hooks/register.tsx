@@ -3,20 +3,26 @@
 // helper process that holds the live connection.
 //
 //   /cypher        opens the pane and starts helper/cypher-helper.mjs
+//   /cypher <invite link or code>   the same, entering that room
 //   helper stdout  RoomView events (contract.ts), relayed to the pane as props
 //   pane posts     intents, forwarded to the helper over its private socket
 //   pane closed    the helper is stopped: you are in the room only while you
 //                  can see it
 //
+// The pane is one Client, and a Client gets its keys only from a click. Only
+// the fullscreen layout reports clicks, so on the main screen the pane would
+// be out of reach. There the host draws Claude's own text field under it and
+// relays what the field is given (text, Enter, ↑↓) as strokes.
+//
 // This module holds no credential and makes no decision about the room. No
 // room text is returned to the model or written to a log.
 import type { EngineInterface, HookStream, ProcessSpawnChunk, ProcessSpawnResult, Register } from 'claude-code'
 
-import { isEvent, isIntent } from './contract'
+import { inviteOf, isEvent, isIntent } from './contract'
 import type { Event, Intent, RoomView } from './contract'
 import { isProfile } from './profile'
 import type { Profile } from './profile'
-import type { Answer } from './session'
+import type { Answer, Stroke } from './session'
 import { skinFor } from './skins'
 
 type Engine = EngineInterface
@@ -29,9 +35,23 @@ const TITLE = 'cypher'
 const CLIENT_KEY = 'room'
 const STORE_KEY = 'profile'
 const HELPER = 'helper/cypher-helper.mjs'
-const DEFAULT_ORIGIN = 'https://cypher.hoerl.org'
+const DEFAULT_ORIGIN = 'https://cypherchat.org'
 const NO_NODE = 'Cypher needs Node.js 22 or newer on your PATH · nodejs.org'
 const STOPPED = 'disconnected · run /cypher to reconnect'
+const SEEN_KEY = 'seen'
+const TIP = 'hint: make tui fullscreen for better user experience'
+const TIP_MS = 8000
+// The main screen's text field and the two stops beside it. The stops are
+// never pressed: a move of the focus ring onto one is ↑ or ↓, and is refused.
+const FIELD = 'say'
+const STEP_BACK = 'back'
+const STEP_ON = 'on'
+const PROMPT = '›'
+const STEPS = '↑↓'
+const SEND = 'send'
+type Field = { value: string; placeholder: string; enter: string }
+const KEPT = 'the keys stay in the field'
+const STROKES_KEPT = 32
 // The pane asks for half the terminal's width at a 3:2 shape. A cell is
 // about twice as tall as it is wide, so 3:2 on screen is 3 columns per row.
 // Requests, not grants: the dock takes the columns (capped at 45%), the
@@ -61,6 +81,16 @@ let problem: string | null = null
 // The server, named only when it is not the default: CYPHER_ORIGIN can come
 // from a project's settings, so the pane always says where it is talking.
 let server: string | null = null
+// Whether Claude's text field stands in for the composer: the main screen,
+// fixed for the session. What it gave, newest last; ids only ever rise, so a
+// pane that outlives a reload of this module still tells new from old.
+let fielded = false
+let strokes: Stroke[] = []
+let strokeId = Date.now()
+// What the field is drawn with (a new `draft` is a new, empty-handed field)
+// and the text it holds as far as this side knows.
+let field = { value: '', placeholder: '', enter: SEND, draft: 0 }
+let held = ''
 
 // ---- the helper ------------------------------------------------------------
 
@@ -133,8 +163,13 @@ function hostOf(origin: string): string {
 // turn instead of starting a second helper.
 let starting = false
 
-async function startHelper($: Engine) {
-  if (helper || starting) return
+async function startHelper($: Engine, invite: string | null) {
+  if (starting) return
+  // Already in a room: an invite moves there.
+  if (helper) {
+    if (invite) void forward($, 0, { type: 'command', text: `/join ${invite}` })
+    return
+  }
   starting = true
   try {
     const origin = (await $.env.get('CYPHER_ORIGIN')) || DEFAULT_ORIGIN
@@ -142,7 +177,8 @@ async function startHelper($: Engine) {
     server = origin === DEFAULT_ORIGIN ? null : hostOf(origin)
     view = null
     problem = null
-    const stream = $.process.spawn({ argv: ['node', `${$.plugin.root}/${HELPER}`, '--origin', origin] })
+    const join = invite ? ['--join', invite] : []
+    const stream = $.process.spawn({ argv: ['node', `${$.plugin.root}/${HELPER}`, '--origin', origin, ...join] })
     helper = stream
     void pump($, stream, run)
   } finally {
@@ -166,6 +202,31 @@ async function close(stream: Helper) {
   } catch {
     // Already ended.
   }
+}
+
+// One stroke from the text field. Text that only replaces unsent text takes
+// its place, so typing does not grow the list.
+function stroke($: Engine, given: Omit<Stroke, 'id'>) {
+  if (given.text !== undefined) held = given.key === 'return' ? '' : given.text
+  const last = strokes.at(-1)
+  const replaces = last !== undefined && last.key === undefined && given.key === undefined
+  strokeId += 1
+  strokes = [...(replaces ? strokes.slice(0, -1) : strokes), { ...given, id: strokeId }].slice(-STROKES_KEPT)
+  redraw($)
+}
+
+// The pane's word on the field. Text the field does not already hold needs
+// a new field: the old one keeps what the person typed.
+function showField($: Engine, next: Field) {
+  const fresh = next.value !== held
+  field = { ...next, draft: field.draft + Number(fresh) }
+  held = next.value
+  redraw($)
+}
+
+function isField(value: unknown): value is Field {
+  const given = value as Partial<Record<keyof Field, unknown>> | null | undefined
+  return [given?.value, given?.placeholder, given?.enter].every(part => typeof part === 'string')
 }
 
 // Hands one intent to the helper; the answer goes back to the pane.
@@ -211,16 +272,49 @@ async function showPane($: Engine, focus: boolean): Promise<boolean> {
   return opened.isPlaced
 }
 
-// A post from the Client: an intent, a theme to keep, or the exit.
+// Puts an invite link on the clipboard; the pane hears whether it took.
+async function copy($: Engine, id: number, text: string) {
+  let ok = false
+  try {
+    ok = (await $.ui.copy({ text })).isCopied
+  } catch {
+    ok = false
+  }
+  answer = { id, ok }
+  redraw($)
+}
+
+// A post from the Client: what its field should show, and its reports in
+// order, one at a time.
 async function receive($: Engine, data: unknown) {
-  const post = data as { id?: unknown; intent?: unknown; profile?: unknown; exit?: unknown } | null
+  const post = data as { reports?: unknown; field?: unknown } | null
+  if (isField(post?.field)) showField($, post.field)
+  const reports: unknown[] = Array.isArray(post?.reports) ? post.reports : []
+  await reports.reduce<Promise<unknown>>(async (done, report) => {
+    await done
+    return act($, report)
+  }, Promise.resolve())
+}
+
+// One report: an intent, a link to copy, a theme to keep, or the exit.
+async function act($: Engine, data: unknown) {
+  const post = data as { id?: unknown; intent?: unknown; copy?: unknown; profile?: unknown; exit?: unknown } | null
   if (typeof post?.id === 'number' && isIntent(post.intent)) return forward($, post.id, post.intent)
+  if (typeof post?.id === 'number' && typeof post.copy === 'string') return copy($, post.id, post.copy)
   if (post?.exit === true) return $.ui.close({ id: PANE })
   if (!isProfile(post?.profile)) return
   const themeChanged = post.profile.theme !== profile?.theme
   profile = { theme: post.profile.theme }
   await $.store.set(STORE_KEY, profile)
   if (themeChanged) await showPane($, false)
+}
+
+// Someone back on the main screen is told what fullscreen would give them;
+// the first visit is left alone.
+async function tip($: Engine) {
+  const back = (await $.store.get(SEEN_KEY)) === true
+  if (back && fielded) $.ui.toast(TIP, { timeoutMs: TIP_MS })
+  if (!back) await $.store.set(SEEN_KEY, true)
 }
 
 export const register: Register = on => {
@@ -230,6 +324,7 @@ export const register: Register = on => {
       await $.command.register({
         name: COMMAND,
         description: 'Open the Cypher room in a pane beside the chat (click it to type)',
+        argumentHint: '[invite link]',
         immediate: true,
       })
     } catch (error) {
@@ -244,8 +339,15 @@ export const register: Register = on => {
     try {
       profile = await storedProfile($)
       size = sizeFor(e.presentation.columns)
+      fielded = !e.presentation.isFullscreen
+      strokes = []
+      field = { value: '', placeholder: '', enter: SEND, draft: field.draft + 1 }
+      held = ''
       // The room only while you can see it: no pane, no connection.
-      if (await showPane($, true)) await startHelper($)
+      if (await showPane($, true)) {
+        await tip($)
+        await startHelper($, inviteOf(e.args))
+      }
     } catch (error) {
       stopHelper()
       $.ui.log(`${COMMAND}: the pane did not open: ${String(error)}`)
@@ -271,13 +373,28 @@ export const register: Register = on => {
     return {}
   })
 
+  // ↑ and ↓ (and tab) in the text field move the focus ring onto a stop
+  // beside it. The move is the key: it is passed on as a stroke and refused,
+  // so the keys stay in the field.
+  on('ui.focus', async ($, e, next) => {
+    const stepped = e.element === STEP_BACK || e.element === STEP_ON
+    if (e.requestId !== PANE || !fielded || e.origin.kind !== 'person' || !stepped) return next(e)
+    stroke($, { key: e.element === STEP_ON ? 'down' : 'up' })
+
+    return { deny: KEPT }
+  })
+
   on('ui.render', { component: 'Pane', requestId: PANE }, ($, e) => {
     const { Text } = $.ui.resolve(e)
     if (e.surface !== 'terminal' && e.surface !== 'desktop') {
       return <Text dimColor>Cypher opens in the terminal or the desktop app.</Text>
     }
-    const { Client } = $.ui.resolve(e)
-    return (
+    const { Box, Button, Client, Input } = $.ui.resolve(e)
+    // The drawing knows its layout where the surface says; /cypher's word
+    // stands until then, and after a reload of this module.
+    if (e.viewport?.isFullscreen !== undefined) fielded = !e.viewport.isFullscreen
+    const withField = fielded && e.surface === 'terminal'
+    const room = (
       <Client
         key={CLIENT_KEY}
         module="./view.tsx"
@@ -290,10 +407,35 @@ export const register: Register = on => {
           server,
           docked: e.props.placement === 'dock',
           paneFocused: e.props.isFocused,
+          fielded: withField,
+          strokes: withField ? strokes : null,
         }}
         width={e.props.bodyColumns}
-        height={e.props.scroll.bodyRows}
+        height={e.props.scroll.bodyRows - Number(withField)}
       />
+    )
+    if (!withField) return room
+    return (
+      <Box flexDirection="column">
+        {room}
+        <Box columnGap={1} paddingX={1}>
+          <Button key={STEP_BACK} plain onPress={() => undefined}>
+            {PROMPT}
+          </Button>
+          <Input
+            key={`${FIELD}-${field.draft}`}
+            autoFocus
+            value={field.value}
+            placeholder={field.placeholder}
+            submitLabel={field.enter || SEND}
+            onInput={text => stroke($, { text })}
+            onSubmit={text => stroke($, { text, key: 'return' })}
+          />
+          <Button key={STEP_ON} plain onPress={() => undefined}>
+            {STEPS}
+          </Button>
+        </Box>
+      </Box>
     )
   })
 }

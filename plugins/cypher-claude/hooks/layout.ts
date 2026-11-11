@@ -3,8 +3,8 @@
 // view.tsx draws what these decide.
 
 // What a cell can be pressed for: a tab, a step to the next or previous tab
-// (the narrow strip's ‹ ›), or a list row.
-export type Target = { kind: 'tab' | 'step' | 'item'; index: number }
+// (the narrow strip's ‹ ›), a list row, or the room line's invite action.
+export type Target = { kind: 'tab' | 'step' | 'item' | 'invite'; index: number }
 // One run of a row: its text, what pressing it does, whether it is chosen.
 export type Segment = { text: string; target: Target | null; active?: boolean }
 type Span = { from: number; to: number; target: Target }

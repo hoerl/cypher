@@ -1,8 +1,8 @@
 {
   "name": "cypher",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Human-only chatrooms, verified with World ID. Run /cypher to open the live room in a pane beside the chat. Needs Node.js 22 or newer.",
-  "homepage": "https://cypher.hoerl.org",
+  "homepage": "https://cypherchat.org",
   "keywords": [
     "chat",
     "world-id",
