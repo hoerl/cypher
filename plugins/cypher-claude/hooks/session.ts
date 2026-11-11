@@ -66,6 +66,13 @@ const CLAIM_HINT = 'enter join the chat · /signin sign in · delete cancel'
 const CLAIM_HINT_FIELD = 'enter join the chat · /signin sign in · ↓ cancel'
 const CLAIM_ENTER = 'join'
 const HELP_GAP = 2
+// The rooms list ends in the way to make one, as the app's does.
+const START_ROOM = '+ Start a room'
+const NAME_ROOM = 'Name your room'
+const START_ENTER = 'start'
+const START_HINT = 'enter start · delete cancel'
+const START_HINT_FIELD = 'type a name · enter start · ↑↓ cancel'
+const MAX_TOPIC = 100
 // Runs of spaces: what separates a command from its argument. Splits
 // "/join  lobby" into two; "/join" stays one.
 // https://regex101.com/?regex=%5Cs%2B&testString=%2Fjoin%20%20lobby
@@ -191,6 +198,8 @@ export class Session {
   panel: Panel = null
   selected = 0
   query = ''
+  // Rooms: the composer is naming a new room, not searching.
+  naming = false
   input = ''
   cursor = 0
   // Rows scrolled up from the newest; view.tsx clamps it to what it can show.
@@ -336,6 +345,7 @@ export class Session {
     if (!this.focused && this.placeholder === null) return 'click to use the keyboard'
     if (this.handoff) return 'enter opens the link · c copies · delete cancels'
     if (this.claiming) return CLAIM_HINT
+    if (this.naming) return START_HINT
     const hints: Record<string, string> = {
       theme: '↑↓ preview · enter save · delete cancel',
       rooms: '↑↓ select · enter join · type to search · delete back',
@@ -352,6 +362,7 @@ export class Session {
   get enterLabel(): string {
     if (this.handoff) return 'open'
     if (this.claiming) return CLAIM_ENTER
+    if (this.panel === 'rooms' && this.selected === this.startRow) return START_ENTER
     return FIELD_ENTER[String(this.panel)] ?? 'send'
   }
 
@@ -359,6 +370,7 @@ export class Session {
     if (!this.focused) return 'ctrl+x tab to type'
     if (this.handoff) return 'enter opens the link · ↑ copies · ↓ cancels'
     if (this.claiming) return CLAIM_HINT_FIELD
+    if (this.naming) return START_HINT_FIELD
     if (this.panel === 'who' && !this.view.people.length) return FIELD_TABS
     if (this.panel) return FIELD_HINTS[this.panel] ?? FIELD_TABS
     return this.guest ? '↑↓ tabs · /help · /signin' : '↑↓ tabs · /help'
@@ -369,6 +381,7 @@ export class Session {
     if (this.handoff) return null
     if (this.claiming) return CLAIM_PLACEHOLDER
     if (this.panel === null) return this.room ? `message #${clean(this.room.topic)}` : 'connecting…'
+    if (this.naming) return NAME_ROOM
     return this.panel === 'rooms' ? 'search rooms' : null
   }
 
@@ -447,7 +460,9 @@ export class Session {
   }
 
   highlight(item: number) {
-    if (this.menu()) this.selected = item
+    if (!this.menu()) return
+    if (item !== this.selected) this.naming = false
+    this.selected = item
   }
 
   choose(item: number) {
@@ -503,7 +518,7 @@ export class Session {
 
   private count(): number {
     const counts: Record<string, () => number> = {
-      rooms: () => this.matchingRooms().length + (this.query ? 0 : this.view.locked),
+      rooms: () => this.startRow + 1,
       who: () => this.view.people.length,
       settings: () => this.settings().length,
       theme: () => themes.length,
@@ -513,7 +528,7 @@ export class Session {
 
   // The rooms panel searches as you type.
   private search() {
-    if (this.panel !== 'rooms' || this.input.startsWith('/')) return
+    if (this.panel !== 'rooms' || this.naming || this.input.startsWith('/')) return
     if (this.query !== this.input) this.selected = 0
     this.query = this.input
   }
@@ -540,6 +555,7 @@ export class Session {
       if (direction > 0) this.back()
       return
     }
+    this.naming = false
     const to = this.selected + direction
     if (this.menu() && to >= 0 && to < this.count()) {
       this.selected = to
@@ -550,6 +566,7 @@ export class Session {
   }
 
   private move(direction: number) {
+    this.naming = false
     const count = this.count()
     if (count) this.selected = (this.selected + direction + count) % count
   }
@@ -585,6 +602,7 @@ export class Session {
   private open(panel: Panel) {
     this.release()
     this.rememberDraft()
+    this.naming = false
     this.panel = panel
     this.selected = panel === 'theme' ? Math.max(0, themes.indexOf(this.theme)) : 0
     this.query = ''
@@ -608,6 +626,11 @@ export class Session {
 
   // Escape's job: theme goes back to settings, any other panel to chat.
   private back() {
+    // From a room's name, one step back is the list it was started from.
+    if (this.naming) {
+      this.naming = false
+      return
+    }
     const fromTheme = this.panel === 'theme'
     this.open(fromTheme ? 'settings' : null)
     if (fromTheme) this.selected = this.settings().indexOf('theme')
@@ -655,6 +678,8 @@ export class Session {
   // A locked room is a promise of verification: choosing one starts it.
   // Nothing chosen (a search that matched nothing) does nothing.
   private joinSelected() {
+    if (this.naming) return this.startRoom()
+    if (this.selected === this.startRow) return this.nameRoom()
     const matches = this.matchingRooms()
     const room = matches[this.selected]
     if (!room) {
@@ -662,6 +687,34 @@ export class Session {
       return
     }
     if (room.id !== this.view.roomId) this.ask({ type: 'join', roomId: room.id })
+    this.open(null)
+  }
+
+  // The row under the rooms: the last one, after any locked rooms.
+  private get startRow(): number {
+    return this.matchingRooms().length + (this.query ? 0 : this.view.locked)
+  }
+
+  // "Start a room" turns the composer into the room's name. What was
+  // searched for and not found stays in it, as the name to begin with.
+  // Only an account can start a room: a guest is shown the way in.
+  private nameRoom() {
+    if (this.nameless) {
+      this.ask({ type: 'signin' })
+      return
+    }
+    this.naming = true
+    this.query = ''
+    this.selected = this.startRow
+  }
+
+  // Enter on a name: the room is made and you are moved into it.
+  private startRoom() {
+    const topic = chars(clean(this.input).trim()).slice(0, MAX_TOPIC).join('')
+    if (!topic) return
+    this.ask({ type: 'create', topic })
+    this.input = ''
+    this.cursor = 0
     this.open(null)
   }
 
@@ -831,7 +884,7 @@ export class Session {
         )
     const none: Line[] =
       rooms.length || locked.length ? [] : [{ text: 'No rooms match. Backspace clears your search.', kind: 'dim' }]
-    return [...search, ...rooms, ...locked, ...none]
+    return [...search, ...rooms, ...locked, ...none, this.listRow(START_ROOM, this.startRow)]
   }
 
   // You are one of the room: in the list's column, marked as the list marks.

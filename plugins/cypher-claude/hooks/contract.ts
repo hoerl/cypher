@@ -55,6 +55,8 @@ export type Intent =
   | { type: 'say'; text: string }
   | { type: 'command'; text: string }
   | { type: 'join'; roomId: string }
+  // A new room by this name; you are moved into it.
+  | { type: 'create'; topic: string }
   | { type: 'mute'; memberId: string }
   | { type: 'signin' }
   // A new account under this name: the guest's way in.
@@ -80,6 +82,7 @@ export function isIntent(value: unknown): value is Intent {
   if (TEXT.has(value.type)) return isString(value.text)
   if (value.type === 'join') return isString(value.roomId)
   if (value.type === 'claim') return isString(value.name)
+  if (value.type === 'create') return isString(value.topic)
   if (value.type === 'mute') return isString(value.memberId)
   return false
 }
