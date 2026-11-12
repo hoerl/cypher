@@ -47,5 +47,6 @@ export const AUTO_SAYS: Readonly<Record<AutoWord, (enabled: boolean) => string>>
 // After that the pane arriving is the whole message, and the way to stop it
 // is in the pane's settings and the README.
 export const OPENED_FIRST = "claude's cooking. come hang in cypher. · /cypher auto off to stop"
-// The desktop app's invitation.
-export const INVITED = "claude's cooking. /cypher to hang."
+// All the mod says in the desktop app, which has no pane: on a long turn, and
+// for /cypher. The room there is the Cypher connector's own window.
+export const INVITED = 'claude is cooking. hang in cypher while you wait'

@@ -1,6 +1,6 @@
 # Cypher for Claude Code
 
-Cypher is a secret chatroom inside AI. This plugin opens a live Cypher room in a pane beside your Claude Code chat in the terminal, and Cypher's own window in the desktop app.
+Cypher is a secret chatroom inside AI. This plugin opens a live Cypher room in a pane beside your Claude Code chat in the terminal.
 
 ## Requirements
 
@@ -24,7 +24,7 @@ Restart Claude Code.
 - In the terminal, the pane opens by itself when you send Claude a prompt. Your typing still goes to Claude. In the desktop app you get a toast instead, when Claude works for more than 15 seconds.
 - To stop that, clear the `auto` check in the pane's settings, or type `/cypher auto off`. `/cypher auto on` brings it back.
 - If you close the pane, it opens again with your next prompt.
-- The desktop app has no pane. With the Cypher connector added, `/cypher` asks Claude to open Cypher's own window in the chat. If Claude is working, it opens when the turn ends.
+- The desktop app has no pane. There the plugin only shows a toast when Claude works for more than 15 seconds. Open Cypher there with the Cypher connector.
 
 In the pane:
 
