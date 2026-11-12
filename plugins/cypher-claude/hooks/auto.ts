@@ -1,9 +1,12 @@
-// When the pane opens by itself: Claude has been working for a while, so the
-// person is waiting, and the room is put beside the chat without a command.
+// When the pane opens by itself: the person has sent Claude a prompt, so they
+// are about to wait, and the room is put beside the chat without a command.
+// It opens as the prompt is sent because that is the one open Claude Code
+// draws at any terminal width. The desktop app gets an invitation instead,
+// once the turn has run long: its pane is not the room's own window.
 // `/cypher auto off` stops it, `/cypher auto on` brings it back, and
 // `/cypher auto` says which it is. Shared by register.tsx and its tests.
 
-// How long a turn runs before the pane opens. A short answer opens nothing.
+// How long a turn runs before the desktop app is invited. A short answer says nothing.
 const DWELL_SECONDS = 15
 const MS_PER_SECOND = 1000
 export const DWELL_MS = DWELL_SECONDS * MS_PER_SECOND
@@ -35,7 +38,7 @@ export function autoWord(args: string): AutoWord | null {
 }
 
 export const AUTO_SAYS: Readonly<Record<AutoWord, (enabled: boolean) => string>> = {
-  on: () => 'cypher opens by itself while Claude works · /cypher auto off stops it',
+  on: () => 'cypher opens by itself when you send a prompt · /cypher auto off stops it',
   off: () => 'cypher stays closed until you run /cypher · /cypher auto on brings it back',
   status: enabled => `cypher opening by itself is ${enabled ? 'on' : 'off'} · /cypher auto ${enabled ? 'off' : 'on'} changes it`,
 }
@@ -44,3 +47,5 @@ export const AUTO_SAYS: Readonly<Record<AutoWord, (enabled: boolean) => string>>
 // stop it follows; after that it is in the pane's settings and the README.
 export const OPENED_ITSELF = "claude's cooking. come hang in cypher."
 export const OPENED_FIRST = `${OPENED_ITSELF} · /cypher auto off to stop`
+// The desktop app's invitation.
+export const INVITED = "claude's cooking. /cypher to hang."

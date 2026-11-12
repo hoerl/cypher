@@ -21,9 +21,9 @@ Restart Claude Code.
 - Type `/cypher` to open the pane.
 - Type `/cypher <invite link>` to open a room from an invite.
 - Closing the pane disconnects you.
-- When Claude works for more than 15 seconds, the pane opens by itself. Your typing still goes to Claude. This needs a terminal at least 144 columns wide.
+- In the terminal, the pane opens by itself when you send Claude a prompt. Your typing still goes to Claude. In the desktop app you get a toast instead, when Claude works for more than 15 seconds.
 - To stop that, clear the `auto` check in the pane's settings, or type `/cypher auto off`. `/cypher auto on` brings it back.
-- If you close the pane, it opens again the next time Claude works for more than 15 seconds.
+- If you close the pane, it opens again with your next prompt.
 
 In the pane:
 

@@ -8,8 +8,9 @@
 //   pane posts     intents, forwarded to the helper over its private socket
 //   pane closed    the helper is stopped: you are in the room only while you
 //                  can see it
-//   a long turn    the pane opens by itself, without the keys (auto.ts);
-//                  /cypher auto off stops that
+//   a prompt sent  the pane opens by itself, without the keys (auto.ts);
+//                  the desktop app is invited by a toast on a long turn
+//                  instead; /cypher auto off stops both
 //
 // The pane is one Client, and a Client gets its keys only from a click. Only
 // the fullscreen layout reports clicks, so on the main screen the pane would
@@ -20,7 +21,7 @@
 // room text is returned to the model or written to a log.
 import type { EngineInterface, HookStream, ProcessSpawnChunk, ProcessSpawnResult, Register, Timer } from 'claude-code'
 
-import { AUTO_SAYS, DWELL_MS, OPENED_FIRST, OPENED_ITSELF, autoWord, opensByItself } from './auto'
+import { AUTO_SAYS, DWELL_MS, INVITED, OPENED_FIRST, OPENED_ITSELF, autoWord, opensByItself } from './auto'
 import type { AutoWord } from './auto'
 import { inviteOf, isEvent, isIntent } from './contract'
 import type { Event, Intent, RoomView } from './contract'
@@ -47,6 +48,9 @@ const TIP = 'hint: make tui fullscreen for better user experience'
 const TIP_MS = 8000
 // Stored `false` once the person turns the self-opening off; absent, it is on.
 const AUTO_KEY = 'auto'
+// Where a prompt a person sent comes from; a task's notice, a schedule and a
+// peer session are not the person waiting.
+const PERSON_SENT: readonly string[] = ['composer', 'bridge', 'sdk']
 // Stored once the person has been told how to stop it.
 const AUTO_TOLD_KEY = 'autoTold'
 // The main screen's text field and the two stops beside it. The stops are
@@ -113,6 +117,10 @@ let dwell: Timer | null = null
 let shown = false
 // The setting as last read, for the pane's check.
 let auto = true
+// Where the session draws, once a drawing has said: the desktop app is
+// invited, not opened on. And whether the pane now up opened by itself.
+let desktop = false
+let byItself = false
 
 // ---- the helper ------------------------------------------------------------
 
@@ -326,22 +334,36 @@ async function greet($: Engine) {
   if (!told) await $.store.set(AUTO_TOLD_KEY, true)
 }
 
-// The turn has run long: the room is put beside the chat, the keys left with
-// the prompt. An open the surface does not draw (a narrow terminal holds an
-// unasked pane back) is withdrawn, so no room is joined out of sight.
+// A prompt was sent: the room is put beside the chat, the keys left with the
+// prompt. An open no surface draws is withdrawn, so no room is joined out of
+// sight.
 async function arrive($: Engine) {
-  dwell = null
   try {
     if (!opensByItself({ enabled: await autoEnabled($), open: shown || starting })) return
     profile = await storedProfile($)
     freshField()
     if (!(await showPane($, false))) return void (await $.ui.close({ id: PANE }))
+    byItself = true
     await greet($)
     await startHelper($, null)
   } catch (error) {
     stopHelper()
     $.ui.log(`${COMMAND}: the pane did not open by itself: ${String(error)}`, { to: 'debug' })
   }
+}
+
+// The desktop app, a turn run long: an invitation, and no pane.
+async function invite($: Engine) {
+  dwell = null
+  if (desktop && !shown && (await autoEnabled($))) $.ui.toast(INVITED, { timeoutMs: TIP_MS })
+}
+
+// A pane that opened by itself turned out to be the desktop app's: it is
+// taken back and the invitation shown in its place.
+async function retreat($: Engine) {
+  byItself = false
+  await $.ui.close({ id: PANE })
+  $.ui.toast(INVITED, { timeoutMs: TIP_MS })
 }
 
 // `/cypher auto …`: keeps the setting and says what now holds.
@@ -424,6 +446,7 @@ export const register: Register = on => {
       profile = await storedProfile($)
       await autoEnabled($)
       size = sizeFor(e.presentation.columns)
+      byItself = false
       fielded = !e.presentation.isFullscreen
       freshField()
       // The room only while you can see it: no pane, no connection.
@@ -450,12 +473,33 @@ export const register: Register = on => {
     return next(e)
   })
 
+  // The pane opens as the person's prompt is sent. A slash command and a
+  // prompt they did not type open nothing.
+  on('prompt.submit', async ($, e, next) => {
+    const sent = await next(e)
+    const typed = e.command === undefined && e.isMeta !== true && PERSON_SENT.includes(e.origin.kind)
+    if (typed && !desktop) await arrive($)
+    return sent
+  })
+
+  // Draws nothing: the band above the prompt says which surface draws the
+  // session before any pane is up.
+  on('ui.render', { component: 'AbovePrompt' }, ($, e, next) => {
+    desktop = e.surface === 'desktop'
+    return next(e)
+  })
+
+  on('session.attach', async ($, e, next) => {
+    if (e.surface === 'desktop') desktop = true
+    return next(e)
+  })
+
   // The main loop's turn alone: a subagent's run is part of the same wait.
   // The timer outlives this dispatch, and is the module's own until it fires.
   on('turn.start', async ($, e, next) => {
     if (e.agentId === undefined) {
       stopDwell()
-      dwell = $.clock.after(DWELL_MS, () => void arrive($))
+      dwell = $.clock.after(DWELL_MS, () => void invite($))
     }
     return next(e)
   })
@@ -493,6 +537,10 @@ export const register: Register = on => {
     // The drawing knows its layout where the surface says; /cypher's word
     // stands until then, and after a reload of this module.
     if (e.viewport?.isFullscreen !== undefined) fielded = !e.viewport.isFullscreen
+    if (e.surface === 'desktop' && byItself) {
+      desktop = true
+      void retreat($)
+    }
     if (tipPending) {
       tipPending = false
       if (e.surface === 'terminal') void tip($)
