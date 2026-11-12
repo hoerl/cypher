@@ -27,9 +27,10 @@ export type Line = {
   qr?: QrRun[]
 }
 export type BodyKind = 'chat' | 'list' | 'page'
-// What the session asks the host for: keep a profile, close, run an intent,
+// What the session asks the host for: keep a profile, keep whether the pane
+// opens by itself, close, run an intent,
 // or put text (an invite link) on the clipboard.
-export type Report = { profile: Profile } | { exit: true } | { id: number; intent: Intent } | { id: number; copy: string }
+export type Report = { profile: Profile } | { auto: boolean } | { exit: true } | { id: number; intent: Intent } | { id: number; copy: string }
 export type Answer = { id: number; ok: boolean }
 // What Claude's own text field hands the pane on the main screen, where no
 // click (and so no key) reaches it: the field's text as it changes, Enter
@@ -37,7 +38,8 @@ export type Answer = { id: number; ok: boolean }
 export type Stroke = { id: number; text?: string; key?: 'return' | 'up' | 'down' }
 
 type Draft = { input: string; cursor: number }
-type Setting = 'name' | 'signin' | 'signout' | 'verify' | 'theme'
+type Setting = 'name' | 'signin' | 'signout' | 'verify' | 'theme' | 'auto'
+const CHECK = { on: '[x]', off: '[ ]' }
 
 export const tabs: readonly Panel[] = [null, 'rooms', 'who', 'settings']
 const TAB_OF: Partial<Record<NonNullable<Panel>, Panel>> = { theme: 'settings' }
@@ -166,6 +168,7 @@ const SETTING_LABEL: Record<Setting, (s: Session) => string> = {
   signout: () => 'account  sign out',
   verify: () => 'verify with world id',
   theme: s => `theme    ${s.theme}`,
+  auto: s => `auto     ${s.auto ? CHECK.on : CHECK.off} open while claude works`,
 }
 
 // Control and direction-changing characters never reach the room or the
@@ -195,6 +198,8 @@ const EMPTY: RoomView = {
 export class Session {
   view: RoomView = EMPTY
   theme: Theme = 'terminal'
+  // Whether the pane opens by itself on a long turn; the host keeps it.
+  auto = true
   panel: Panel = null
   selected = 0
   query = ''
@@ -644,8 +649,8 @@ export class Session {
 
   private settings(): Setting[] {
     const identity = this.view.self?.identity
-    if (!this.view.self || identity === 'guest') return ['signin', 'theme']
-    return ['name', 'signout', ...(identity === 'human' ? [] : (['verify'] as const)), 'theme']
+    if (!this.view.self || identity === 'guest') return ['signin', 'theme', 'auto']
+    return ['name', 'signout', ...(identity === 'human' ? [] : (['verify'] as const)), 'theme', 'auto']
   }
 
   private matchingRooms(): RoomInfo[] {
@@ -723,6 +728,10 @@ export class Session {
       this.input = `/nick ${this.name}`
       this.cursor = chars(this.input).length
     } else if (setting === 'theme') this.open('theme')
+    else if (setting === 'auto') {
+      this.auto = !this.auto
+      this.outbox.push({ auto: this.auto })
+    }
     else if (setting) this.ask({ type: setting })
   }
 

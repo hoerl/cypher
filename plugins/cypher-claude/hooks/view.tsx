@@ -36,6 +36,8 @@ import type { Skin } from './skins'
 // Node.js, the helper gone) shown where the notice goes.
 type Props = {
   profile?: Profile | null
+  // Whether the pane opens by itself, as the host has it stored.
+  auto?: boolean
   view?: RoomView | null
   seq?: number
   answer?: Answer | null
@@ -78,6 +80,7 @@ const labels = tabs.map(tab => LABELS[String(tab)] ?? '')
 // One session per pane instance, starting from the stored profile.
 let session = new Session()
 let seenSeq = -1
+let seenAuto: boolean | undefined
 let seenAnswer = -1
 let hover: Target | null = null
 let pressed: Target | null = null
@@ -228,6 +231,7 @@ const View: ClientModule<Props, Frame> = (props, surface) => {
   if (surface.state === undefined) {
     session = new Session(props.profile)
     seenSeq = -1
+    seenAuto = undefined
     seenAnswer = -1
     paneWasFocused = false
     // Strokes from before this instance are not replayed: one may be a sent line.
@@ -249,6 +253,11 @@ const View: ClientModule<Props, Frame> = (props, surface) => {
   })
 
   absorb(props)
+  // The host's word wins when it changes (`/cypher auto off` beside an open pane).
+  if (props.auto !== undefined && props.auto !== seenAuto) {
+    seenAuto = props.auto
+    session.auto = props.auto
+  }
   const fielded = props.fielded === true
   session.fielded = fielded
   if (fielded) {

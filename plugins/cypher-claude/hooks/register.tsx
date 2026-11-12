@@ -8,6 +8,8 @@
 //   pane posts     intents, forwarded to the helper over its private socket
 //   pane closed    the helper is stopped: you are in the room only while you
 //                  can see it
+//   a long turn    the pane opens by itself, without the keys (auto.ts);
+//                  /cypher auto off stops that
 //
 // The pane is one Client, and a Client gets its keys only from a click. Only
 // the fullscreen layout reports clicks, so on the main screen the pane would
@@ -16,8 +18,10 @@
 //
 // This module holds no credential and makes no decision about the room. No
 // room text is returned to the model or written to a log.
-import type { EngineInterface, HookStream, ProcessSpawnChunk, ProcessSpawnResult, Register } from 'claude-code'
+import type { EngineInterface, HookStream, ProcessSpawnChunk, ProcessSpawnResult, Register, Timer } from 'claude-code'
 
+import { AUTO_SAYS, DWELL_MS, OPENED_FIRST, OPENED_ITSELF, autoWord, opensByItself } from './auto'
+import type { AutoWord } from './auto'
 import { inviteOf, isEvent, isIntent } from './contract'
 import type { Event, Intent, RoomView } from './contract'
 import { isProfile } from './profile'
@@ -41,6 +45,10 @@ const STOPPED = 'disconnected · run /cypher to reconnect'
 const SEEN_KEY = 'seen'
 const TIP = 'hint: make tui fullscreen for better user experience'
 const TIP_MS = 8000
+// Stored `false` once the person turns the self-opening off; absent, it is on.
+const AUTO_KEY = 'auto'
+// Stored once the person has been told how to stop it.
+const AUTO_TOLD_KEY = 'autoTold'
 // The main screen's text field and the two stops beside it. The stops are
 // never pressed: a move of the focus ring onto one is ↑ or ↓, and is refused.
 const FIELD = 'say'
@@ -96,6 +104,15 @@ let strokeId = Date.now()
 // and the text it holds as far as this side knows.
 let field = { value: '', placeholder: '', enter: SEND, draft: 0 }
 let held = ''
+
+// ---- opening by itself -------------------------------------------------------
+
+// The wait a running turn started; cancelled when the turn ends first.
+let dwell: Timer | null = null
+// Whether the pane is up, as far as this module's life knows.
+let shown = false
+// The setting as last read, for the pane's check.
+let auto = true
 
 // ---- the helper ------------------------------------------------------------
 
@@ -274,7 +291,63 @@ async function showPane($: Engine, focus: boolean): Promise<boolean> {
   })
   // A Client takes the keys only from a click: $.ui.focus is refused for it.
   if (!opened.isPlaced) $.ui.log(`${COMMAND}: pane not placed: ${opened.reason}`, { to: 'debug' })
+  shown = opened.isPlaced
   return opened.isPlaced
+}
+
+// The composer starts empty, and the main screen's field with it.
+function freshField() {
+  strokes = []
+  field = { value: '', placeholder: '', enter: SEND, draft: field.draft + 1 }
+  held = ''
+}
+
+function stopDwell() {
+  dwell?.cancel()
+  dwell = null
+}
+
+async function autoEnabled($: Engine): Promise<boolean> {
+  auto = (await $.store.get(AUTO_KEY)) !== false
+  return auto
+}
+
+async function keepAuto($: Engine, enabled: boolean) {
+  auto = enabled
+  await $.store.set(AUTO_KEY, enabled)
+  if (!enabled) stopDwell()
+  redraw($)
+}
+
+// The arrival line; the first one ever also says how to stop it.
+async function greet($: Engine) {
+  const told = (await $.store.get(AUTO_TOLD_KEY)) === true
+  $.ui.toast(told ? OPENED_ITSELF : OPENED_FIRST, { timeoutMs: TIP_MS })
+  if (!told) await $.store.set(AUTO_TOLD_KEY, true)
+}
+
+// The turn has run long: the room is put beside the chat, the keys left with
+// the prompt. An open the surface does not draw (a narrow terminal holds an
+// unasked pane back) is withdrawn, so no room is joined out of sight.
+async function arrive($: Engine) {
+  dwell = null
+  try {
+    if (!opensByItself({ enabled: await autoEnabled($), open: shown || starting })) return
+    profile = await storedProfile($)
+    freshField()
+    if (!(await showPane($, false))) return void (await $.ui.close({ id: PANE }))
+    await greet($)
+    await startHelper($, null)
+  } catch (error) {
+    stopHelper()
+    $.ui.log(`${COMMAND}: the pane did not open by itself: ${String(error)}`, { to: 'debug' })
+  }
+}
+
+// `/cypher auto …`: keeps the setting and says what now holds.
+async function setAuto($: Engine, word: AutoWord) {
+  if (word !== 'status') await keepAuto($, word === 'on')
+  $.ui.toast(AUTO_SAYS[word](await autoEnabled($)), { timeoutMs: TIP_MS })
 }
 
 // Puts an invite link on the clipboard; the pane hears whether it took.
@@ -303,7 +376,8 @@ async function receive($: Engine, data: unknown) {
 
 // One report: an intent, a link to copy, a theme to keep, or the exit.
 async function act($: Engine, data: unknown) {
-  const post = data as { id?: unknown; intent?: unknown; copy?: unknown; profile?: unknown; exit?: unknown } | null
+  const post = data as { id?: unknown; intent?: unknown; copy?: unknown; profile?: unknown; auto?: unknown; exit?: unknown } | null
+  if (typeof post?.auto === 'boolean') return keepAuto($, post.auto)
   if (typeof post?.id === 'number' && isIntent(post.intent)) return forward($, post.id, post.intent)
   if (typeof post?.id === 'number' && typeof post.copy === 'string') return copy($, post.id, post.copy)
   if (post?.exit === true) return $.ui.close({ id: PANE })
@@ -329,7 +403,7 @@ export const register: Register = on => {
       await $.command.register({
         name: COMMAND,
         description: 'Open the Cypher room in a pane beside the chat (click it to type)',
-        argumentHint: '[invite link]',
+        argumentHint: '[invite link | auto on | auto off]',
         immediate: true,
       })
     } catch (error) {
@@ -342,12 +416,16 @@ export const register: Register = on => {
   // `{}`: no output row, so nothing about the room reaches the model.
   on('command.run', { command: COMMAND }, async ($, e) => {
     try {
+      const word = autoWord(e.args)
+      if (word) {
+        await setAuto($, word)
+        return {}
+      }
       profile = await storedProfile($)
+      await autoEnabled($)
       size = sizeFor(e.presentation.columns)
       fielded = !e.presentation.isFullscreen
-      strokes = []
-      field = { value: '', placeholder: '', enter: SEND, draft: field.draft + 1 }
-      held = ''
+      freshField()
       // The room only while you can see it: no pane, no connection.
       if (await showPane($, true)) {
         tipPending = true
@@ -367,7 +445,24 @@ export const register: Register = on => {
       stopHelper()
       answer = null
       problem = null
+      shown = false
     }
+    return next(e)
+  })
+
+  // The main loop's turn alone: a subagent's run is part of the same wait.
+  // The timer outlives this dispatch, and is the module's own until it fires.
+  on('turn.start', async ($, e, next) => {
+    if (e.agentId === undefined) {
+      stopDwell()
+      dwell = $.clock.after(DWELL_MS, () => void arrive($))
+    }
+    return next(e)
+  })
+
+  // The pane stays when the turn ends: a conversation is not cut off.
+  on('turn.complete', async ($, e, next) => {
+    if (e.agentId === undefined) stopDwell()
     return next(e)
   })
 
@@ -414,6 +509,7 @@ export const register: Register = on => {
         module="./view.tsx"
         props={{
           profile,
+          auto,
           view,
           seq,
           answer,
