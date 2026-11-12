@@ -11,6 +11,8 @@
 //   a prompt sent  the pane opens by itself, without the keys (auto.ts);
 //                  the desktop app is invited by a toast on a long turn
 //                  instead; /cypher auto off stops both
+//   desktop app    no pane: /cypher opens the connector's own window
+//                  (portal.ts) by asking the model for it
 //
 // The pane is one Client, and a Client gets its keys only from a click. Only
 // the fullscreen layout reports clicks, so on the main screen the pane would
@@ -21,10 +23,11 @@
 // room text is returned to the model or written to a log.
 import type { EngineInterface, HookStream, ProcessSpawnChunk, ProcessSpawnResult, Register, Timer } from 'claude-code'
 
-import { AUTO_SAYS, DWELL_MS, INVITED, OPENED_FIRST, OPENED_ITSELF, autoWord, opensByItself } from './auto'
+import { AUTO_SAYS, DWELL_MS, INVITED, OPENED_FIRST, autoWord, opensByItself } from './auto'
 import type { AutoWord } from './auto'
 import { inviteOf, isEvent, isIntent } from './contract'
 import type { Event, Intent, RoomView } from './contract'
+import { NO_CONNECTOR, PORTAL_WAITS, portalAsk, portalTool } from './portal'
 import { isProfile } from './profile'
 import type { Profile } from './profile'
 import type { Answer, Stroke } from './session'
@@ -43,9 +46,12 @@ const HELPER = 'helper/cypher-helper.mjs'
 const DEFAULT_ORIGIN = 'https://cypherchat.org'
 const NO_NODE = 'Cypher needs Node.js 22 or newer on your PATH · nodejs.org'
 const STOPPED = 'disconnected · run /cypher to reconnect'
+const STOPPED_HERE = 'Cypher opens in the chat here.'
 const SEEN_KEY = 'seen'
 const TIP = 'hint: make tui fullscreen for better user experience'
 const TIP_MS = 8000
+// The wait between /cypher's run ending and the mod's prompt for the window.
+const ASK_AFTER_MS = 50
 // Stored `false` once the person turns the self-opening off; absent, it is on.
 const AUTO_KEY = 'auto'
 // Where a prompt a person sent comes from; a task's notice, a schedule and a
@@ -72,8 +78,6 @@ const STROKES_KEPT = 32
 const SHARE = 2
 const COLUMNS_PER_ROW = 3
 const MIN_ROWS = 12
-// The desktop pane's own title bar, which the window's rows include.
-const DESKTOP_FRAME_ROWS = 2
 type Size = { rows: number; columns: number }
 
 // Nothing to ask for until a terminal has been measured (headless, or a
@@ -121,6 +125,14 @@ let auto = true
 // invited, not opened on. And whether the pane now up opened by itself.
 let desktop = false
 let byItself = false
+// A main-loop turn is running: a prompt of the mod's waits for its end.
+let working = false
+// The mod's own prompt for the room's window, until it is sent.
+let asking: string | null = null
+// The invite /cypher was last given, for a pane the desktop app turns away.
+let invited: string | null = null
+// A pane the desktop app drew is on its way out; one drawing starts that.
+let leaving = false
 
 // ---- the helper ------------------------------------------------------------
 
@@ -327,11 +339,12 @@ async function keepAuto($: Engine, enabled: boolean) {
   redraw($)
 }
 
-// The arrival line; the first one ever also says how to stop it.
+// The pane arriving says enough. The first time ever, a line says how to
+// stop it; after that, nothing.
 async function greet($: Engine) {
-  const told = (await $.store.get(AUTO_TOLD_KEY)) === true
-  $.ui.toast(told ? OPENED_ITSELF : OPENED_FIRST, { timeoutMs: TIP_MS })
-  if (!told) await $.store.set(AUTO_TOLD_KEY, true)
+  if ((await $.store.get(AUTO_TOLD_KEY)) === true) return
+  $.ui.toast(OPENED_FIRST, { timeoutMs: TIP_MS })
+  await $.store.set(AUTO_TOLD_KEY, true)
 }
 
 // A prompt was sent: the room is put beside the chat, the keys left with the
@@ -358,12 +371,48 @@ async function invite($: Engine) {
   if (desktop && !shown && (await autoEnabled($))) $.ui.toast(INVITED, { timeoutMs: TIP_MS })
 }
 
-// A pane that opened by itself turned out to be the desktop app's: it is
-// taken back and the invitation shown in its place.
-async function retreat($: Engine) {
+// The mod's own prompt. The engine takes none from inside /cypher's own run,
+// so it is sent just after: from a timer, or as the running turn ends.
+async function ask($: Engine) {
+  const text = asking
+  if (text === null) return
+  asking = null
+  try {
+    await $.prompt.submit({ text, asUser: true })
+  } catch (error) {
+    $.ui.log(`${COMMAND}: the window was not asked for: ${String(error)}`, { to: 'debug' })
+  }
+}
+
+// The desktop app: the room's own window, which only the model's call opens.
+// Says whether it was asked for; with no connector here, it was not.
+async function openPortal($: Engine, invite: string | null): Promise<boolean> {
+  const tool = portalTool(await $.tool.list())
+  if (!tool) return false
+  if (shown) await $.ui.close({ id: PANE })
+  asking = portalAsk(invite)
+  if (working) $.ui.toast(PORTAL_WAITS, { timeoutMs: TIP_MS })
+  else $.clock.after(ASK_AFTER_MS, () => void ask($))
+  return true
+}
+
+// /cypher in the desktop app: the window, or how to get one. Never the pane.
+async function openOnDesktop($: Engine, invite: string | null) {
+  if (!(await openPortal($, invite))) $.ui.toast(NO_CONNECTOR, { timeoutMs: TIP_MS })
+}
+
+// A pane opened before the session said it draws in the desktop app: it is
+// closed, and what the desktop app gets is given in its place.
+async function turnAway($: Engine) {
+  const wasByItself = byItself
   byItself = false
-  await $.ui.close({ id: PANE })
-  $.ui.toast(INVITED, { timeoutMs: TIP_MS })
+  try {
+    await $.ui.close({ id: PANE })
+    if (wasByItself) $.ui.toast(INVITED, { timeoutMs: TIP_MS })
+    else await openOnDesktop($, invited)
+  } finally {
+    leaving = false
+  }
 }
 
 // `/cypher auto …`: keeps the setting and says what now holds.
@@ -443,6 +492,11 @@ export const register: Register = on => {
         await setAuto($, word)
         return {}
       }
+      invited = inviteOf(e.args)
+      if (desktop) {
+        await openOnDesktop($, invited)
+        return {}
+      }
       profile = await storedProfile($)
       await autoEnabled($)
       size = sizeFor(e.presentation.columns)
@@ -452,7 +506,7 @@ export const register: Register = on => {
       // The room only while you can see it: no pane, no connection.
       if (await showPane($, true)) {
         tipPending = true
-        await startHelper($, inviteOf(e.args))
+        await startHelper($, invited)
       }
     } catch (error) {
       stopHelper()
@@ -498,6 +552,7 @@ export const register: Register = on => {
   // The timer outlives this dispatch, and is the module's own until it fires.
   on('turn.start', async ($, e, next) => {
     if (e.agentId === undefined) {
+      working = true
       stopDwell()
       dwell = $.clock.after(DWELL_MS, () => void invite($))
     }
@@ -506,7 +561,11 @@ export const register: Register = on => {
 
   // The pane stays when the turn ends: a conversation is not cut off.
   on('turn.complete', async ($, e, next) => {
-    if (e.agentId === undefined) stopDwell()
+    if (e.agentId === undefined) {
+      working = false
+      stopDwell()
+      void ask($)
+    }
     return next(e)
   })
 
@@ -530,27 +589,25 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, ($, e) => {
     const { Text } = $.ui.resolve(e)
-    if (e.surface !== 'terminal' && e.surface !== 'desktop') {
-      return <Text dimColor>Cypher opens in the terminal or the desktop app.</Text>
+    if (e.surface === 'desktop') {
+      desktop = true
+      if (!leaving) {
+        leaving = true
+        void turnAway($)
+      }
+      return <Text dimColor>{STOPPED_HERE}</Text>
     }
+    if (e.surface !== 'terminal') return <Text dimColor>Cypher opens in the terminal or the desktop app.</Text>
     const { Box, Button, Client, Input } = $.ui.resolve(e)
     // The drawing knows its layout where the surface says; /cypher's word
     // stands until then, and after a reload of this module.
     if (e.viewport?.isFullscreen !== undefined) fielded = !e.viewport.isFullscreen
-    if (e.surface === 'desktop' && byItself) {
-      desktop = true
-      void retreat($)
-    }
     if (tipPending) {
       tipPending = false
-      if (e.surface === 'terminal') void tip($)
+      void tip($)
     }
-    const withField = fielded && e.surface === 'terminal'
-    // The desktop app gives the pane the window's height, but its bodyRows
-    // can be the few rows the tree asked for: fill the window there.
-    const rows = e.surface === 'desktop'
-      ? Math.max(e.props.scroll.bodyRows, (e.viewport?.rows ?? 0) - DESKTOP_FRAME_ROWS)
-      : e.props.scroll.bodyRows - Number(withField)
+    const withField = fielded
+    const rows = e.props.scroll.bodyRows - Number(withField)
     const room = (
       <Client
         key={CLIENT_KEY}

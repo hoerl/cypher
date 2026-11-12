@@ -1,6 +1,6 @@
 {
   "name": "cypher",
-  "version": "0.3.8",
+  "version": "0.3.9",
   "description": "Human-only chatrooms, verified with World ID. Run /cypher to open the live room in a pane beside the chat. Needs Node.js 22 or newer.",
   "homepage": "https://cypherchat.org",
   "keywords": [

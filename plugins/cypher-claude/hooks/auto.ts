@@ -43,9 +43,9 @@ export const AUTO_SAYS: Readonly<Record<AutoWord, (enabled: boolean) => string>>
   status: enabled => `cypher opening by itself is ${enabled ? 'on' : 'off'} · /cypher auto ${enabled ? 'off' : 'on'} changes it`,
 }
 
-// Said each time the pane opens by itself. The first time ever, the way to
-// stop it follows; after that it is in the pane's settings and the README.
-export const OPENED_ITSELF = "claude's cooking. come hang in cypher."
-export const OPENED_FIRST = `${OPENED_ITSELF} · /cypher auto off to stop`
+// Said the first time ever the pane opens by itself, with the way to stop it.
+// After that the pane arriving is the whole message, and the way to stop it
+// is in the pane's settings and the README.
+export const OPENED_FIRST = "claude's cooking. come hang in cypher. · /cypher auto off to stop"
 // The desktop app's invitation.
 export const INVITED = "claude's cooking. /cypher to hang."
