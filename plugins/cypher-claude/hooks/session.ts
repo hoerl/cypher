@@ -8,16 +8,17 @@
 // Backspace on an empty composer takes Escape's role: one step back.
 import type { ClientKeyEvent } from 'claude-code'
 
-import { inviteOf } from './contract'
-import type { Intent, Person, QrRun, RoomInfo, RoomView } from './contract'
+import { FOR_YOU_EMPTY, forYouMark, forYouNews, inviteOf } from './contract'
+import type { Intent, Person, QrRun, RoomInfo, RoomView, Run } from './contract'
 import { clip } from './layout'
 import { themes } from './profile'
 import type { Profile, Theme } from './profile'
 
-export type Panel = null | 'rooms' | 'who' | 'settings' | 'theme' | 'help'
+export type Panel = null | 'rooms' | 'who' | 'settings' | 'theme' | 'help' | 'foryou'
 // A row as the view draws it. `nick` marks a message (drawn in the name
 // column), `own` your own, `item` a row the pointer can pick (its index in
-// the panel's list), `qr` one row of a sign-in code.
+// the panel's list), `qr` one row of a sign-in code, `runs` a message's text
+// with its mentions marked.
 export type Line = {
   text: string
   kind: 'text' | 'dim' | 'accent' | 'name' | 'own' | 'selected'
@@ -25,6 +26,7 @@ export type Line = {
   own?: boolean
   item?: number
   qr?: QrRun[]
+  runs?: Run[]
 }
 export type BodyKind = 'chat' | 'list' | 'page'
 // What the session asks the host for: keep a profile, keep whether the pane
@@ -107,6 +109,7 @@ const COMMANDS = [
   '/join',
   '/invite',
   '/who',
+  '/foryou',
   '/nick',
   '/ignore',
   '/settings',
@@ -122,7 +125,10 @@ const LOCAL: Record<string, Panel> = {
   '/theme': 'theme',
   '/colors': 'theme',
   '/help': 'help',
+  '/foryou': 'foryou',
 }
+const FOR_YOU = '/foryou'
+const FOR_YOU_TITLE = 'for you'
 const HELP: Array<[string, string]> = [
   ['/signin', 'Sign in to chat'],
   ['/verify', 'Verify with World ID'],
@@ -132,6 +138,7 @@ const HELP: Array<[string, string]> = [
   ['/join <room>', 'Move to a room, by name or invite'],
   ['/invite', 'Copy this room’s invite link'],
   ['/who', 'See who is here'],
+  ['/foryou', 'List what was aimed at you'],
   ['/nick <name>', 'Choose your name'],
   ['/ignore <name>', 'Mute someone'],
   ['/theme', 'Choose a theme'],
@@ -329,6 +336,7 @@ export class Session {
       settings: () => this.settingRows(),
       theme: () => this.themeRows(),
       help: () => this.helpRows(),
+      foryou: () => this.forYouRows(),
     }
     return (rows[String(this.panel)] ?? (() => this.chatRows()))()
   }
@@ -343,8 +351,16 @@ export class Session {
     return this.room ? `#${clean(this.room.topic)}` : ''
   }
 
-  // The keys that do something here, or how to get the keys at all.
+  // What is new for you, then the keys: the count shows only while there is
+  // one, and not over the list itself or a sign-in page.
   get hint(): string {
+    const unseen = this.view.forYou?.unseen ?? 0
+    if (!unseen || this.handoff || this.panel === 'foryou') return this.keys
+    return [forYouNews(unseen), FOR_YOU, this.keys].join(SEPARATOR)
+  }
+
+  // The keys that do something here, or how to get the keys at all.
+  private get keys(): string {
     if (this.fielded) return this.fieldHint
     // The composer already says "click to type" where there is one.
     if (!this.focused && this.placeholder === null) return 'click to use the keyboard'
@@ -743,6 +759,8 @@ export class Session {
     const local = LOCAL[command.toLowerCase()]
     this.input = ''
     this.cursor = 0
+    // Opening the list is what marks it seen: the helper tells the service.
+    if (local === 'foryou') this.ask({ type: 'command', text: FOR_YOU })
     if (local !== undefined) return this.open(local)
     // The field types a lone ? as text, so there Enter is what asks.
     if (this.fielded && text === '?') return this.open('help')
@@ -782,6 +800,8 @@ export class Session {
   private join(name: string) {
     const link = name.includes('join=')
     const invite = inviteOf(name)
+    // A leading # on a room's name. Matches the "#" of "#lounge"; leaves "lounge" and "a#b".
+    // https://regex101.com/?regex=%5E%23&testString=%23lounge
     const wanted = name.replace(/^#/, '').toLowerCase()
     const invited = invite ? this.view.rooms.find(r => r.code === invite) : undefined
     const named = link ? undefined : this.view.rooms.find(r => r.topic.toLowerCase() === wanted)
@@ -873,7 +893,9 @@ export class Session {
           ]
         : []
       const nick = nameOf({ name: m.author, verified: m.verified })
-      return [...stamp, { text: `${nick}  ${clean(m.text)}`, nick, own: m.own, kind: m.own ? 'own' : 'text' }]
+      const runs = m.runs?.map(run => ({ ...run, text: clean(run.text) }))
+      const row: Line = { text: `${nick}  ${clean(m.text)}`, nick, own: m.own, kind: m.own ? 'own' : 'text' }
+      return [...stamp, runs ? { ...row, runs } : row]
     })
   }
 
@@ -934,6 +956,19 @@ export class Session {
       { text: '', kind: 'dim' },
       { text: this.fielded ? HELP_TYPING_FIELD : HELP_TYPING, kind: 'dim' },
     ]
+  }
+
+  // What was aimed at you, newest first, as the helper worded it: a dot before
+  // the unread rows, which are at full strength; the read ones are dim. An
+  // older helper does not say what is unread, so its unseen rows stand in.
+  private forYouRows(): Line[] {
+    const lines = this.view.forYou?.lines ?? []
+    const rows = lines.map((line): Line => {
+      const unread = line.unread ?? line.unseen
+      return { text: forYouMark(unread) + clean(line.text), kind: unread ? 'text' : 'dim' }
+    })
+    const empty: Line = { text: FOR_YOU_EMPTY, kind: 'dim' }
+    return [{ text: FOR_YOU_TITLE, kind: 'accent' }, ...(rows.length ? rows : [empty])]
   }
 
   // A sign-in or verification: the link, the code, then the QR code, which

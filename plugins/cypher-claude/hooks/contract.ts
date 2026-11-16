@@ -16,6 +16,9 @@ export type Connection = 'connecting' | 'connected' | 'reconnecting' | 'closed'
 export type Person = { id: string; name: string; verified: boolean; muted: boolean }
 // `code`: what an invite to this room carries.
 export type RoomInfo = { id: string; topic: string; count: number; human: boolean; code: string | null }
+// A stretch of a message drawn one way: a mention of the reader, of anyone
+// else, or plain text.
+export type Run = { text: string; mention?: 'you' | 'other' }
 export type Message = {
   id: string
   author: string
@@ -23,7 +26,13 @@ export type Message = {
   own: boolean
   text: string
   at: number
+  // The text again as runs, sent only for a message that mentions someone.
+  runs?: Run[]
 }
+// One row of the "For you" list, worded by the helper: who or what, the room,
+// how long ago. Never message text. `unseen` is new since the list was last
+// opened; `unread` is not read yet, and a helper from before it sends none.
+export type ForYouLine = { text: string; unseen: boolean; unread?: boolean }
 // One QR row as runs of black and white cells (src/cli/qr.ts's QrRun).
 export type QrRun = { text: string; foreground: 'black' | 'white'; background: 'black' | 'white' }
 export type Invitation = { kind: 'signin' | 'verify'; url: string; code: string | null; qr: QrRun[][] }
@@ -44,6 +53,9 @@ export type RoomView = {
   // Your room's messages, oldest first, the muted left out.
   messages: Message[]
   invitation: Invitation | null
+  // The "For you" list, newest first, and how much of it is unseen. Absent
+  // for a guest, who has no list.
+  forYou?: { lines: ForYouLine[]; unseen: number }
 }
 
 export type Event =
@@ -111,3 +123,9 @@ export function inviteOf(text: string): string | null {
   const code = INVITE_LINK.exec(pasted)?.[1] ?? (INVITE_BARE.test(pasted) ? pasted : null)
   return code?.toUpperCase() ?? null
 }
+
+// The list's own words, as src/shared/for-you-copy.ts has them (a hooks module
+// cannot import that file; tests/pane-helper.test.ts holds the two together).
+export const FOR_YOU_EMPTY = 'Nothing for you yet.'
+export const forYouNews = (count: number) => `${count} new for you`
+export const forYouMark = (unread: boolean) => (unread ? '• ' : '  ')

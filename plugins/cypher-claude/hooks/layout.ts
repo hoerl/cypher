@@ -1,6 +1,7 @@
 // The pane's geometry in whole cells: text that fits, the tab strip at any
 // width, and the hit map the pointer reads. Pure functions, no drawing:
 // view.tsx draws what these decide.
+import type { Run } from './contract'
 
 // What a cell can be pressed for: a tab, a step to the next or previous tab
 // (the narrow strip's ‹ ›), a list row, the room line's invite action, or
@@ -33,6 +34,36 @@ export function wrapped(text: string, room: number): string[] {
   const end = space > room / HALF ? space : room
   const tail = rest.slice(end).join('')
   return [rest.slice(0, end).join(''), ...wrapped(tail.startsWith(' ') ? tail.slice(1) : tail, room)]
+}
+
+// `wrapped` for a message in runs: the same lines, each as the runs that fall
+// on it. A run a break cuts in two is on both lines with its mark, so a
+// mention split by the pane's edge still reads as one.
+export function wrappedRuns(runs: Run[], room: number): Run[][] {
+  const cells = runs.flatMap(run => chars(run.text).map((text): Run => ({ ...run, text })))
+  const lines = wrapped(cells.map(cell => cell.text).join(''), room)
+  // One array, added to in place: copying it for every line made a long message slow to draw.
+  const out: Run[][] = []
+  let at = 0
+  lines.forEach(line => {
+    const end = at + width(line)
+    out.push(joined(cells.slice(at, end)))
+    // `wrapped` drops the space a line broke at.
+    at = end < cells.length && cells[end]?.text === ' ' ? end + 1 : end
+  })
+  return out
+}
+
+// Neighbouring cells marked the same way, as one run again.
+function joined(cells: Run[]): Run[] {
+  // Added to in place, for the same reason: one copy per character is too many.
+  const runs: Run[] = []
+  cells.forEach(cell => {
+    const last = runs.at(-1)
+    if (last && last.mention === cell.mention) last.text += cell.text
+    else runs.push({ ...cell })
+  })
+  return runs
 }
 
 // The tabs as pills one cell apart when they fit in `room`, else the active

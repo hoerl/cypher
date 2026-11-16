@@ -18,9 +18,9 @@
 // what it is given as strokes, and this draws no composer of its own.
 import type { ClientModule, ClientPointerEvent, ClientSurface } from 'claude-code'
 
-import { clip, same, spansOf, tabStrip, targetAt, width, wrapped } from './layout'
+import { clip, same, spansOf, tabStrip, targetAt, width, wrapped, wrappedRuns } from './layout'
 import type { HitMap, Segment, Target } from './layout'
-import type { QrRun, RoomView } from './contract'
+import type { QrRun, RoomView, Run } from './contract'
 import type { Profile } from './profile'
 import { SEPARATOR, Session, tabs } from './session'
 import type { Answer, Line, Report, Stroke } from './session'
@@ -143,9 +143,14 @@ function wrapAll(rows: Line[], room: number, column: number): Drawn[] {
     const message = row.text.slice(row.nick.length).trimStart()
     // A name longer than the column is cut to it, so a row never outgrows the pane.
     const nick = clip(row.nick, column - NICK_GAP)
-    return wrapped(message, Math.max(1, room - column)).map((text, i) => ({
+    const fits = Math.max(1, room - column)
+    // A message with mentions wraps as its runs, each line keeping its marks.
+    const marked = row.runs ? wrappedRuns(row.runs, fits) : null
+    const texts = marked ? marked.map(runs => runs.map(run => run.text).join('')) : wrapped(message, fits)
+    return texts.map((text, i) => ({
       ...row,
       text,
+      runs: marked?.[i],
       nick: i === 0 ? nick : null,
       key: `${r}-${i}`,
       indent: column,
@@ -268,7 +273,8 @@ const View: ClientModule<Props, Frame> = (props, surface) => {
   } else followFocus(props.paneFocused === true)
   const live = session.focused
   // The divider's colors are Claude's own (theme keys), as on the dock's left.
-  const edge = props.docked ? (live ? 'permission' : 'inactive') : null
+  const edgeColor = live ? 'permission' : 'inactive'
+  const edge = props.docked ? edgeColor : null
   const outer = Math.max(MIN_COLUMNS, surface.columns || MIN_COLUMNS)
   const columns = outer - Number(edge !== null)
   const height = Math.max(MIN_ROWS, surface.rows || MIN_ROWS)
@@ -346,6 +352,18 @@ const View: ClientModule<Props, Frame> = (props, surface) => {
     return same(hover, { kind: 'item', index: line.item }) ? skin.hover : undefined
   }
 
+  // One run of a message: a mention of you bold in the accent, of anyone
+  // else underlined, as the terminal client draws them.
+  const mention = (run: Run, i: number) => {
+    if (!run.mention) return run.text
+    const look = run.mention === 'you' ? { ...ink.accent, weight: 'bold' as const } : { underline: true }
+    return (
+      <Text key={'run-' + i} {...look}>
+        {run.text}
+      </Text>
+    )
+  }
+
   const line = (row: Drawn) => {
     if (row.qr) {
       return (
@@ -377,7 +395,7 @@ const View: ClientModule<Props, Frame> = (props, surface) => {
         </Text>
         <Text {...ink.accent}>{nick.endsWith('✓') ? ' ✓' : ''}</Text>
         {nick ? pad : ' '.repeat(row.indent)}
-        {row.text}
+        {row.runs ? row.runs.map(mention) : row.text}
       </Text>
     )
   }
