@@ -13,6 +13,10 @@
 //                  instead; /cypher auto off stops both
 //   desktop app    no pane at all: the toast on a long turn, and the same
 //                  line for /cypher. The room there is the connector's own.
+//   the look       in the desktop and mobile apps the session wears the
+//                  member's Cypher skin, with a dot behind the conversation
+//                  for each person online, when their account allows it
+//                  (look.ts); /cypher skin off stops it on this computer
 //
 // The pane is one Client, and a Client gets its keys only from a click. Only
 // the fullscreen layout reports clicks, so on the main screen the pane would
@@ -26,7 +30,9 @@ import type { EngineInterface, HookStream, ProcessSpawnChunk, ProcessSpawnResult
 import { AUTO_SAYS, DWELL_MS, INVITED, OPENED_FIRST, autoWord, opensByItself } from './auto'
 import type { AutoWord } from './auto'
 import { inviteOf, isEvent, isIntent } from './contract'
-import type { Event, Intent, RoomView } from './contract'
+import type { Event, Intent, NoLook, RoomView } from './contract'
+import { FLASH_MS, LOOK_SAYS, MOTION_MS, SCENE, STILL, alt, attend, lookFor, scene, skinWord } from './look'
+import type { Attention, Change, SkinWord } from './look'
 import { isProfile } from './profile'
 import type { Profile } from './profile'
 import type { Answer, Stroke } from './session'
@@ -124,6 +130,240 @@ let byItself = false
 // A pane the desktop app drew is on its way out; one drawing starts that.
 let leaving = false
 
+// ---- the look ------------------------------------------------------------------
+//
+// In the desktop and mobile apps the session wears the member's Cypher skin:
+// the app's colors, and a wordless scene behind the conversation with a dot
+// for each person online. The member allows it with a switch in Cypher's
+// settings, kept on their account. A second helper, in its read-only mode,
+// asks the server what the account says; it never sits in a room. It starts
+// where a desktop or mobile surface draws, so a terminal asks nothing.
+
+// The account's last answer, so the next session starts in the right look.
+const LOOK_KEY = 'look'
+// This computer's own off, whatever the account says.
+const LOOK_OFF_KEY = 'lookOff'
+const LOOK_RETRY_MS = 15_000
+
+type Known = { skin: string | null; match: boolean }
+
+// What the account last said; null until a stored or fresh answer is read.
+let known: Known | null = null
+let lookOff = false
+// Whether a surface that draws a look has shown itself. The desktop app is one;
+// so is the mobile app, which `desktop` does not cover.
+let lookSurface = false
+// Whether this module set the theme that stands: only then may it clear it.
+let looking = false
+// The skin the standing theme was set for.
+let worn: string | null = null
+let online = 0
+// The time of the newest unseen poke or mention in the last answer; undefined
+// until the first one.
+let seenAimed: number | null | undefined
+let attention: Attention = 'rest'
+let flash: Timer | null = null
+// What the next drawing shows as motion, and the timer that draws it still again.
+let change: Change = STILL
+let settle: Timer | null = null
+// Why the helper has nothing to say, when it has said so.
+let noLook: NoLook | null = null
+let lookHelper: Helper | null = null
+let lookGeneration = 0
+// Set before the first await, so drawings that arrive during a start wait for
+// it instead of starting a second helper.
+let lookStarting = false
+// A helper that ended by itself is not started again until the pause is over.
+let lookPaused = false
+// One theme change at a time, in the order they were asked for.
+let wearing: Promise<void> = Promise.resolve()
+
+// The surfaces that draw a look. A terminal draws none.
+const showsLook = (surface: string): boolean => surface === 'desktop' || surface === 'mobile'
+
+// The scene as last drawn: the apps ask for the backdrop more often than it changes.
+let drawn: { key: string; svg: string } | null = null
+function sceneNow(): string {
+  const state = online > 0 ? attention : 'rest'
+  const key = JSON.stringify([worn, online, state, change])
+  if (drawn?.key !== key) drawn = { key, svg: scene(worn, online, state, change) }
+  return drawn.svg
+}
+
+function isKnown(value: unknown): value is Known {
+  const given = value as Partial<Record<keyof Known, unknown>> | null | undefined
+  return (given?.skin === null || typeof given?.skin === 'string') && typeof given.match === 'boolean'
+}
+
+// Makes the theme agree with the account and this computer's off: sets it,
+// sets it again for another skin, or clears the one this module set.
+async function wearNow($: Engine) {
+  if (!known?.match || lookOff) {
+    if (looking) await $.theme.clear()
+    looking = false
+    return
+  }
+  if (looking && worn === known.skin) return
+  const skin = known.skin
+  const result = await $.theme.set(lookFor(skin))
+  looking = true
+  worn = skin
+  if (!result.isDrawn) $.ui.log(`${COMMAND}: look not drawn: ${result.reason}`, { to: 'debug' })
+}
+
+function wear($: Engine): Promise<void> {
+  wearing = wearing.then(() => wearNow($)).catch(error => {
+    $.ui.log(`${COMMAND}: look not set: ${String(error)}`, { to: 'debug' })
+  })
+  return wearing
+}
+
+// Called wherever a desktop or mobile surface shows itself.
+async function startLook($: Engine) {
+  lookSurface = true
+  if (lookHelper || lookStarting || lookPaused || lookOff) return
+  lookStarting = true
+  try {
+    const run = ++lookGeneration
+    const origin = (await $.env.get('CYPHER_ORIGIN')) || DEFAULT_ORIGIN
+    // Turned off while this start waited: start nothing.
+    if (run !== lookGeneration) return
+    const stream = $.process.spawn({ argv: ['node', `${$.plugin.root}/${HELPER}`, '--look', '--origin', origin] })
+    lookHelper = stream
+    void readLines(stream, () => run === lookGeneration, line => takeLook($, line), () => lookGone($))
+  } catch (error) {
+    // It could not be started: wait out the same pause as a helper that ended.
+    $.ui.log(`${COMMAND}: look helper not started: ${String(error)}`, { to: 'debug' })
+    lookGone($)
+  } finally {
+    lookStarting = false
+  }
+}
+
+// The read-only helper ended by itself: the look stays as it is, and the next
+// drawing starts the helper again only after a pause, so a helper that cannot
+// run is not started on every frame.
+function lookGone($: Engine) {
+  lookHelper = null
+  noLook = 'unreachable'
+  lookPaused = true
+  $.clock.after(LOOK_RETRY_MS, () => {
+    lookPaused = false
+    redraw($)
+  })
+}
+
+function stopLook() {
+  lookGeneration += 1
+  const stream = lookHelper
+  lookHelper = null
+  seenAimed = undefined
+  if (stream) void close(stream)
+}
+
+function takeLook($: Engine, line: string) {
+  let event: unknown
+  try {
+    event = JSON.parse(line)
+  } catch {
+    return
+  }
+  if (!isEvent(event)) return
+  if (event.type === 'nolook') {
+    // Signed out or out of reach: the look that stands is left alone.
+    noLook = event.reason
+    return
+  }
+  if (event.type !== 'look') return
+  noLook = null
+  if (event.skin !== known?.skin || event.match !== known.match) {
+    known = { skin: event.skin, match: event.match }
+    void $.store.set(LOOK_KEY, known)
+  }
+  // Every answer, not only a changed one: a set that failed is tried again, and
+  // one already standing costs nothing.
+  void wear($)
+  const next = attend(seenAimed, event.aimed)
+  seenAimed = event.aimed
+  moved($, {
+    arrived: Math.max(0, event.count - online),
+    left: Math.max(0, online - event.count),
+    settling: next === 'rest' && attention !== 'rest',
+  })
+  online = event.count
+  if (next === 'flash') return startFlash($)
+  // A flash in progress ends lit by itself; nothing else waits on a timer.
+  if (attention !== 'flash' || next === 'rest') {
+    flash?.cancel()
+    flash = null
+    attention = next
+  }
+  redraw($)
+}
+
+// A change is drawn once with its motion, then again still once that has played.
+function moved($: Engine, next: Change) {
+  if (!next.arrived && !next.left && !next.settling) return
+  settle?.cancel()
+  change = next
+  settle = $.clock.after(MOTION_MS, () => {
+    settle = null
+    change = STILL
+    redraw($)
+  })
+}
+
+// One flash: a drawing with it, then, once it has played, the dots stay lit.
+function startFlash($: Engine) {
+  flash?.cancel()
+  attention = 'flash'
+  flash = $.clock.after(FLASH_MS, () => {
+    flash = null
+    attention = 'bright'
+    redraw($)
+  })
+  redraw($)
+}
+
+function lookStatus(): string {
+  if (lookOff) return LOOK_SAYS.off
+  if (!lookSurface) return LOOK_SAYS.terminal
+  if (noLook === 'signed-out') return LOOK_SAYS.signedOut
+  if (!known) return LOOK_SAYS.unknown
+  return known.match ? LOOK_SAYS.on : LOOK_SAYS.unset
+}
+
+// `/cypher skin …`: this computer's own off and on, and what now holds. The
+// account's switch is Cypher's to change, never this command's.
+async function setSkin($: Engine, word: SkinWord) {
+  if (word.kind === 'off') {
+    lookOff = true
+    await $.store.set(LOOK_OFF_KEY, true)
+    stopLook()
+    await wear($)
+  }
+  if (word.kind === 'on') {
+    lookOff = false
+    await $.store.delete(LOOK_OFF_KEY)
+    await wear($)
+    if (lookSurface) void startLook($)
+  }
+  // Said in the transcript, where the model does not read it.
+  $.ui.log(lookStatus())
+}
+
+// A session starts in the look the account last asked for, before the helper
+// has answered. A terminal draws no look, so setting one there shows nothing.
+async function restoreLook($: Engine) {
+  lookOff = (await $.store.get(LOOK_OFF_KEY)) === true
+  // A surface may have shown itself, and started the helper, while this read waited.
+  if (lookOff) stopLook()
+  const saved: unknown = await $.store.get(LOOK_KEY)
+  // An answer that arrived in the meantime is newer than the stored one.
+  known ??= isKnown(saved) ? saved : null
+  await wear($)
+}
+
 // ---- the helper ------------------------------------------------------------
 
 let helper: Helper | null = null
@@ -150,7 +390,7 @@ function take($: Engine, line: string) {
     view = event.view
     seq += 1
     problem = null
-  } else problem = event.message
+  } else if (event.type === 'fatal') problem = event.message
   redraw($)
 }
 
@@ -164,23 +404,32 @@ function ended($: Engine, run: number, why: string) {
   redraw($)
 }
 
-// Reads the helper one piece at a time until it ends. Only stdout is read:
-// stderr is dropped unread, so nothing the helper might print reaches a log.
-// Each piece schedules the next read, so a long session builds no chain.
-async function pump($: Engine, stream: Helper, run: number, buffer = '') {
+// Reads a helper one piece at a time until it ends, a whole line at a time.
+// Only stdout is read: stderr is dropped unread, so nothing the helper might
+// print reaches a log. Each piece schedules the next read, so a long session
+// builds no chain. `isCurrent` false: a newer start replaced this one.
+// `onEnd(failed)`: failed when the first pull rejects, as when the child
+// cannot start (no node on PATH).
+async function readLines(
+  stream: Helper,
+  isCurrent: () => boolean,
+  onLine: (line: string) => void,
+  onEnd: (failed: boolean) => void,
+  buffer = '',
+) {
   let step: IteratorResult<ProcessSpawnChunk, ProcessSpawnResult>
   try {
     step = await stream.next()
   } catch {
-    // The first pull rejects when the child cannot start: no node on PATH.
-    return ended($, run, NO_NODE)
+    if (isCurrent()) onEnd(true)
+    return
   }
-  if (run !== generation) return
-  if (step.done) return ended($, run, STOPPED)
-  if (step.value.stream !== 'stdout') return void pump($, stream, run, buffer)
+  if (!isCurrent()) return
+  if (step.done) return onEnd(false)
+  if (step.value.stream !== 'stdout') return void readLines(stream, isCurrent, onLine, onEnd, buffer)
   const lines = (buffer + step.value.text).split('\n')
-  lines.slice(0, -1).forEach(line => take($, line))
-  void pump($, stream, run, lines.at(-1) ?? '')
+  lines.slice(0, -1).forEach(onLine)
+  void readLines(stream, isCurrent, onLine, onEnd, lines.at(-1) ?? '')
 }
 
 function hostOf(origin: string): string {
@@ -212,7 +461,9 @@ async function startHelper($: Engine, invite: string | null) {
     const join = invite ? ['--join', invite] : []
     const stream = $.process.spawn({ argv: ['node', `${$.plugin.root}/${HELPER}`, '--origin', origin, ...join] })
     helper = stream
-    void pump($, stream, run)
+    void readLines(stream, () => run === generation, line => take($, line), failed =>
+      ended($, run, failed ? NO_NODE : STOPPED),
+    )
   } finally {
     starting = false
   }
@@ -437,11 +688,16 @@ export const register: Register = on => {
       await $.command.register({
         name: COMMAND,
         description: 'Open the Cypher room in a pane beside the chat (click it to type)',
-        argumentHint: '[invite link | auto on | auto off]',
+        argumentHint: '[invite link | auto on | auto off | skin on | skin off]',
         immediate: true,
       })
     } catch (error) {
       $.ui.log(`${COMMAND}: command not registered: ${String(error)}`)
+    }
+    try {
+      await restoreLook($)
+    } catch (error) {
+      $.ui.log(`${COMMAND}: look not restored: ${String(error)}`, { to: 'debug' })
     }
 
     return started
@@ -450,6 +706,11 @@ export const register: Register = on => {
   // `{}`: no output row, so nothing about the room reaches the model.
   on('command.run', { command: COMMAND }, async ($, e) => {
     try {
+      const skin = skinWord(e.args)
+      if (skin) {
+        await setSkin($, skin)
+        return {}
+      }
       const word = autoWord(e.args)
       if (word) {
         await setAuto($, word)
@@ -498,15 +759,30 @@ export const register: Register = on => {
     return sent
   })
 
+  // The scene behind the conversation: drawn only for Cypher's own, and never
+  // with words. Only the dots.
+  on('ui.render', { component: 'Backdrop' }, ($, e, next) => {
+    if (e.props.plugin !== $.plugin.name || e.props.scene !== SCENE) return next(e)
+    // Spelled out, so the element table below is the drawing surface's own.
+    if (e.surface !== 'desktop' && e.surface !== 'mobile') return next(e)
+    if (e.surface === 'desktop') desktop = true
+    void startLook($)
+    const { Svg } = $.ui.resolve(e)
+    return <Svg source={sceneNow()} alt={alt(online)} isInteractive />
+  })
+
   // Draws nothing: the band above the prompt says which surface draws the
-  // session before any pane is up.
+  // session before any pane is up. A desktop or mobile surface is where the
+  // look shows, so that is where the account is asked about it.
   on('ui.render', { component: 'AbovePrompt' }, ($, e, next) => {
     desktop = e.surface === 'desktop'
+    if (showsLook(e.surface)) void startLook($)
     return next(e)
   })
 
   on('session.attach', async ($, e, next) => {
     if (e.surface === 'desktop') desktop = true
+    if (showsLook(e.surface)) void startLook($)
     return next(e)
   })
 

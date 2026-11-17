@@ -58,10 +58,20 @@ export type RoomView = {
   forYou?: { lines: ForYouLine[]; unseen: number }
 }
 
+// Why the look has nothing to follow: no saved sign-in (or it was refused), or
+// the server could not be reached.
+export type NoLook = 'signed-out' | 'unreachable'
+
 export type Event =
   | { v: typeof PROTOCOL; type: 'ready'; socket: string; token: string }
   | { v: typeof PROTOCOL; type: 'view'; view: RoomView }
   | { v: typeof PROTOCOL; type: 'fatal'; message: string }
+  // The helper's read-only mode for the look Claude Code wears, which never sits
+  // in a room: the member's skin id (null when none was chosen), whether they
+  // let Claude Code match it, how many people are online, and the time of the
+  // newest poke or mention they have not seen (null when nothing waits).
+  | { v: typeof PROTOCOL; type: 'look'; skin: string | null; match: boolean; count: number; aimed: number | null }
+  | { v: typeof PROTOCOL; type: 'nolook'; reason: NoLook }
 
 export type Intent =
   | { type: 'say'; text: string }
@@ -105,6 +115,14 @@ export function isEvent(value: unknown): value is Event {
   if (!isRecord(value) || value.v !== PROTOCOL) return false
   if (value.type === 'ready') return isString(value.socket) && isString(value.token)
   if (value.type === 'view') return isRecord(value.view) && Array.isArray(value.view.messages)
+  if (value.type === 'look')
+    return (
+      (value.skin === null || isString(value.skin)) &&
+      typeof value.match === 'boolean' &&
+      typeof value.count === 'number' &&
+      (value.aimed === null || typeof value.aimed === 'number')
+    )
+  if (value.type === 'nolook') return value.reason === 'signed-out' || value.reason === 'unreachable'
   return value.type === 'fatal' && isString(value.message)
 }
 
