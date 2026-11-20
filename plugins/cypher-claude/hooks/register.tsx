@@ -25,12 +25,14 @@
 //
 // This module holds no credential and makes no decision about the room. No
 // room text is returned to the model or written to a log.
-import type { EngineInterface, HookStream, ProcessSpawnChunk, ProcessSpawnResult, Register, Timer } from 'claude-code'
+import type { EngineInterface, HookStream, ProcessSpawnChunk, ProcessSpawnResult, Register, RenderElement, RenderInput, Timer } from 'claude-code'
 
 import { AUTO_SAYS, DWELL_MS, INVITED, OPENED_FIRST, autoWord, opensByItself } from './auto'
 import type { AutoWord } from './auto'
 import { inviteOf, isEvent, isIntent } from './contract'
 import type { Event, Intent, NoLook, RoomView } from './contract'
+import { SKIN_SITES, kitForRow } from './kit/render'
+import type { SkinSite } from './kit/render'
 import { FLASH_MS, LOOK_SAYS, MOTION_MS, SCENE, STILL, alt, attend, lookFor, scene, skinWord } from './look'
 import type { Attention, Change, SkinWord } from './look'
 import { isProfile } from './profile'
@@ -200,6 +202,7 @@ function isKnown(value: unknown): value is Known {
 async function wearNow($: Engine) {
   if (!known?.match || lookOff) {
     if (looking) await $.theme.clear()
+    if (looking) $.ui.invalidate('ui.render')
     looking = false
     return
   }
@@ -208,7 +211,21 @@ async function wearNow($: Engine) {
   const result = await $.theme.set(lookFor(skin))
   looking = true
   worn = skin
+  // The rows a skin's kit draws (balloons, capsules) follow the new skin.
+  $.ui.invalidate('ui.render')
   if (!result.isDrawn) $.ui.log(`${COMMAND}: look not drawn: ${result.reason}`, { to: 'debug' })
+}
+
+// One of Claude's rows, drawn by the worn skin's kit where it has a part for
+// it (kit/render.ts says when), else Claude's own. Claude's drawing is asked
+// for first and goes inside the kit's art, so a reply keeps its copy buttons.
+async function skinRow($: Engine, e: RenderInput<SkinSite>, claudes: () => Promise<RenderElement>): Promise<RenderElement> {
+  if (e.surface !== 'desktop') return claudes()
+  const site: SkinSite = e.component
+  const props = e.props as Record<string, unknown>
+  const draw = kitForRow({ surface: e.surface, looking, worn, site, props })?.parts[SKIN_SITES[site]]
+  if (!draw) return claudes()
+  return draw($.ui.resolve(e), props, await claudes())
 }
 
 function wear($: Engine): Promise<void> {
@@ -770,6 +787,14 @@ export const register: Register = on => {
     const { Svg } = $.ui.resolve(e)
     return <Svg source={sceneNow()} alt={alt(online)} isInteractive />
   })
+
+  // Claude's own rows in the worn skin's original look (kit/). A row the kit
+  // cannot draw falls back to Claude's own drawing.
+  on('ui.render', { component: 'AssistantMessage' }, ($, e, next) => skinRow($, e, () => next(e))).catch(($, e, next) => next(e))
+  on('ui.render', { component: 'UserMessage' }, ($, e, next) => skinRow($, e, () => next(e))).catch(($, e, next) => next(e))
+  on('ui.render', { component: 'ToolUse' }, ($, e, next) => skinRow($, e, () => next(e))).catch(($, e, next) => next(e))
+  on('ui.render', { component: 'ToolGroup' }, ($, e, next) => skinRow($, e, () => next(e))).catch(($, e, next) => next(e))
+  on('ui.render', { component: 'Spinner' }, ($, e, next) => skinRow($, e, () => next(e))).catch(($, e, next) => next(e))
 
   // Draws nothing: the band above the prompt says which surface draws the
   // session before any pane is up. A desktop or mobile surface is where the

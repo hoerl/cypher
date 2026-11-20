@@ -6,6 +6,7 @@
 // carries text, so nothing from Cypher can reach a screenshot of it.
 import type { ThemeColors, ThemeSetArgs } from 'claude-code'
 
+import { kitFor } from './kit/registry'
 import { makeColors } from './make-colors.js'
 import { WEB_SKINS } from './web-skins'
 import type { WebSkin } from './web-skins'
@@ -14,6 +15,12 @@ export const SCENE = 'cypher-online'
 // The app frosts a backdrop under its panels by default, which smears the dots
 // into smudges (seen in the desktop app); with no frosting they are crisp.
 const BACKDROP = { scene: SCENE, glass: false } as const
+
+// A kit may paint Desktop's panels its own way (95 lays them on its teal desktop).
+function backdropFor(skin: string | null): ThemeSetArgs['backdrop'] {
+  const glass = kitFor(skin)?.glass
+  return glass ? { scene: SCENE, glass } : BACKDROP
+}
 
 type Mode = 'light' | 'dark'
 
@@ -38,6 +45,8 @@ const skinOf = (id: string | null): WebSkin | undefined =>
   id !== null && Object.hasOwn(WEB_SKINS, id) ? WEB_SKINS[id] : undefined
 
 export function modeOf(skin: string): Mode | null {
+  const kit = kitFor(skin)
+  if (kit) return kit.mode
   const colors = skinOf(skin)
   if (!colors) return null
   return lightness(colors.surface) > MIDDLE ? 'light' : 'dark'
@@ -50,6 +59,9 @@ const palettes = new Map<string, Palette>()
 // colors in the dark half, so each palette gives its own mode alone: a surface
 // then draws in that mode whatever the person's own setting.
 function build(skin: string): Palette | null {
+  // A skin with a kit brings its own palette, measured from its original.
+  const kit = kitFor(skin)
+  if (kit) return makeColors(kit.palette)
   const colors = skinOf(skin)
   const mode = modeOf(skin)
   if (!colors || !mode) return null
@@ -78,8 +90,8 @@ export function paletteFor(skin: string | null): Palette | null {
 export function lookFor(skin: string | null): ThemeSetArgs {
   const palette = paletteFor(skin)
   const mode = palette && skin ? modeOf(skin) : null
-  if (!palette || !mode) return { backdrop: BACKDROP }
-  return { colors: palette.theme, backdrop: BACKDROP, overrideColorScheme: mode }
+  if (!palette || !mode) return { backdrop: backdropFor(skin) }
+  return { colors: palette.theme, backdrop: backdropFor(skin), overrideColorScheme: mode }
 }
 
 // ---- attention ----
@@ -244,7 +256,11 @@ function styleFor(attention: Attention, change: Change): string {
  */
 export function scene(skin: string | null, count: number, attention: Attention, change: Change = STILL): string {
   const colors = skinOf(skin)
-  const fill = colors?.accent ?? PLAIN_DOTS
+  const kit = kitFor(skin)
+  const fill = kit?.dot.fill ?? colors?.accent ?? PLAIN_DOTS
+  const rim = kit?.dot.stroke ? ` stroke="${kit.dot.stroke}"` : ''
+  const radius = kit?.dot.radius ?? RADIUS
+  const ground = kit?.ground.fill ?? colors?.surface
   const shown = Math.max(0, Math.min(Math.floor(count), MAX_DOTS))
   const arrived = Math.max(0, Math.min(Math.floor(change.arrived), shown))
   const left = Math.max(0, Math.min(Math.floor(change.left), MAX_DOTS - shown))
@@ -256,14 +272,15 @@ export function scene(skin: string | null, count: number, attention: Attention, 
     const delay = attention === 'flash' ? ring * RIPPLE_STAGGER_MS : k >= firstNew && k < shown ? (k - firstNew) * ARRIVE_STAGGER_MS : 0
     const kind = k >= shown ? 'dot out' : k >= firstNew ? 'dot in' : 'dot'
     const wait = delay > 0 ? ` style="animation-delay:${delay}ms"` : ''
-    return `<circle class="${kind}" cx="${cx}" cy="${ROW}" r="${RADIUS}" fill="${fill}"${wait}/>`
+    return `<circle class="${kind}" cx="${cx}" cy="${ROW}" r="${radius}" fill="${fill}"${rim}${wait}/>`
   }
   const dots = Array.from({ length: shown + left }, (_, k) => dot(k)).join('')
   return (
     // No viewBox on the root: it is the window itself, one unit to a point, and the ground fills it.
     `<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="100%">` +
     styleFor(attention, shownChange) +
-    (colors ? `<rect width="100%" height="100%" fill="${colors.surface}"/>` : '') +
+    (kit ? `<defs>${kit.ground.defs}${kit.dot.defs}</defs>` : '') +
+    (ground ? `<rect width="100%" height="100%" fill="${ground}"/>` : '') +
     // Its left edge is the middle of the window, and the dots step out from it on both sides.
     `<svg x="50%" overflow="visible">${dots}</svg>` +
     `</svg>`
